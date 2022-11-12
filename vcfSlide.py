@@ -12,8 +12,16 @@ parser.add_argument('-v', '--vcf', help='The path of the input VCF file', requir
 parser.add_argument('-w', '--window-size', help='The size of the window', required=True, type=int)
 parser.add_argument('-g', '--gap', help='The gap for every window slide', required=True, type=int)
 parser.add_argument('-o', '--output-prefix', help='The path and prefix of output files', required=True)
-parser.add_argument('--snp-position', help='Write the SNP positions in every window', action='store_true', default=False)
+parser.add_argument('--snp-position', help='Output the positions of SNPs in every window', action='store_true', default=False)
+parser.add_argument('--snp-number', help='Output the number of SNPs in every window', action='store_true', default=False)
+
+parser.add_argument('-G', '--group', help='The path to two files defining two groups of individual to compared, required for divergence statistics', nargs=2, default=0)
+parser.add_argument('--allele-freq-diff', help='Output the mean ALT allele frequency difference between groups in each window', action='store_true', default=False)
 args = parser.parse_args()
+## Check if --group present
+if args.group == 0:
+    if args.allele_freq_diff:
+        parser.error('--allle-freq-diff requires --group')
 
 vcfPath = args.vcf
 wSize = args.window_size
@@ -24,20 +32,52 @@ outPrefix = args.output_prefix
 print('Arguments:')
 for arg in vars(args):
     print(arg, getattr(args, arg))
-print()
+print('')
+
+
+#### Hidden parameters
+windowReportSize = 100     # the denominator of reporting window scanned
+
 
 #### Function for writing output files for statistics
 ## Open output files
 if args.snp_position:
     writeSP = open(outPrefix + '.snppos.tsv', 'w')
+if args.snp_number:
+    writeSN = open(outPrefix + '.snpnum.tsv', 'w')
+if args.allele_freq_diff:
+    writeAFD = open(outPrefix + '.afdiff.tsv', 'w')
+
 
 ## Write the statistics for the records in the window
-def writeRecords(records):
-    ## If output SNP positions in each window
+def writeRecords(records, groupIDs):
+# groupIDs was called when the first record encountered; it defines the indices of two groups in the VCF samples
+    ## If has group information as input
+    if groupIDs != 0:
+        from window_stats import getGroupGenos
+        groupGenos = getGroupGenos(records, groupIDs)
+        # groupGenos = 0 if no records found in window
+        # groupGenos = [[['1/1', '0/1', ... ], [ ... ], ... ], [[ ... ], [ ... ], ... ]]
+        #                  Group 1 SNP 1        G1S2             G2S1     G2S2
+
+    ## If output SNP positions
     if args.snp_position:
-        poss = [r.POS for r in records]
+        from window_stats import snpPositions
+        poss = snpPositions(records)
         writeSP.write('\t'.join([str(x) for x in poss]) + '\n')
     
+    ## if output snp number
+    if args.snp_number:
+        from window_stats import snpNumber
+        num = snpNumber(records)
+        writeSN.write(str(num) + '\n')
+
+    ## if output snp number
+    if args.allele_freq_diff:
+        from window_stats import meanAlleleFreqDiff
+        afd = meanAlleleFreqDiff(records, groupGenos)
+        writeAFD.write(str(afd) + '\n')
+
     return 0
 
 ## Write the start and end position of the window
@@ -54,14 +94,22 @@ vcfReader = vcf.Reader(filename=vcfPath)
 ## Define storing lists
 starts = []    # define the start position of the current opened windows; 1-based
 openRecords = []    # store the openning SNP objects
+totalWindow = 0     # store the total number of window scanned
 
 ## Loop through SNPs in the VCF
 for record in vcfReader:
     pos = record.POS
-    # add the first position into starts
+    # add the first position into starts, also, load the indices of group ID if applicable
     if starts == []:
         starts.append(pos)
-        print('New window: ' + str(pos) + '-' + str(pos + wSize - 1))
+        totalWindow += 1
+
+        # get the group indices if --group is defined, this is for statistics require group definition
+        if args.group != 0:
+            from window_stats import getGroupID
+            groupIDs = getGroupID(record, args.group)
+        else:
+            groupIDs = 0
 
     openRecords.append(record)
 
@@ -72,9 +120,11 @@ for record in vcfReader:
         newStart = starts[-1] + gap
         # add new window starts until all windows start before the SNP are added
         while newStart <= pos:
-            print('New window: ' + str(newStart) + '-' + str(newStart + wSize - 1))
             starts.append(newStart)
             newStart += gap
+            totalWindow += 1
+            if totalWindow % windowReportSize == 0:
+                print('Total window scanned: ' + str(totalWindow))
 
     ## Determine whether some old windows need to be closed and outputed
     firstRight = starts[0] + wSize - 1    # the end of the leftest openning window
@@ -100,7 +150,7 @@ for record in vcfReader:
                         indiTBD.append(i)
 
             ## Output statistics from the records in the window
-            writeRecords(outRecords)
+            writeRecords(outRecords, groupIDs)
             writeWindowStartEnd(start, wSize)
 
             ## Remove the start of the leftest window from starts
@@ -121,5 +171,9 @@ for start in starts:
     for r in openRecords:
         if r.POS >= start and r.POS <= end:
             outRecords.append(r)
-    writeRecords(outRecords)
+    writeRecords(outRecords, groupIDs)
     writeWindowStartEnd(start, wSize)
+
+
+#### Final output
+print('Finished; total window scanned: ' + str(totalWindow))
