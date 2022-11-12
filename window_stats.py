@@ -82,6 +82,11 @@ def meanAlleleFreqDiff(records, groupsGeno):
             # ind = individual genotype, e.g., '0/0'
                 count0 += ind.count('0')
                 count1 += ind.count('1')
+        
+        # if all missing, return NA (this happens because of group individual extraction)
+        if count0 + count1 == 0:
+            return 'NA'
+        # calculate mean allele frequency
         groupAltFreq = count1/(count0 + count1)
         groupAltFreqs.append(groupAltFreq)
 
