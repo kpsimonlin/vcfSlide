@@ -3,6 +3,8 @@
 ## All functions take a list of records (PyVCF object) in the sliding window as input
 
 import numpy as np
+import allel as al
+import re
 
 ## Return the positions of SNPs in the window
 def snpPositions(records):
@@ -16,8 +18,7 @@ def snpNumber(records):
     return num
 
 
-## The following two functions return two lists of genotypes from two groups defined by two group files
-# return the indices of the group individuals in the VCF sample names
+## Return the indices of the group individuals in the VCF sample names
 def getGroupID(record, group):
     # get sample names for two defined groups
     with open(group[0], 'r') as readG1:
@@ -39,7 +40,47 @@ def getGroupID(record, group):
 
     return [group1Id, group2Id]
 
-# return the genotypes of the group individuals
+
+## Transfer the records in the window to a GenotypeArray object in scikit-allel package, ready for some divergence statistics calculation
+def toGenotypeArray(records):
+    if len(records) == 0:
+        # return 0 if no SNPs in window
+        return 0
+
+    recordList = []
+    # will be filled with a three-dimentional list
+    # 1st dimention: variants
+    # 2nd dimention: individuals
+    # 3rd dimention: ploidy
+    # example: a window of 4 variants, 3 individuals, and ploidy of 2 will be
+    # [[[0, 0], [0, 1], [0, 1]],
+    #  [[0, 1], [0, 0], [1, 1]],
+    #  [[0, 0], [1, 1], [0, 1]],
+    #  [[0, 0], [0, 1], [0, 1]]]
+
+    for record in records:
+    # 1st loop: SNP
+        snpGenos = []
+
+        for s in record.samples:
+        # 2nd loop: sample
+            geno = []
+
+            for g in re.split('/|\|', s['GT']):     # split with / or |
+            # 3rd loop: ploidy
+                if g == '.':
+                # transfer missing genotype to -1
+                    geno.append(-1)
+                else:
+                    geno.append(int(g))
+
+            snpGenos.append(geno)
+
+        recordList.append(snpGenos)
+
+    return al.GenotypeArray(recordList)
+
+## OLD: Return the genotypes of the group individuals
 def getGroupGenos(records, groupIds):
 # group is a list containing two paths to two files recording two groups of individual IDs
     if len(records) == 0:
@@ -63,7 +104,33 @@ def getGroupGenos(records, groupIds):
     return [group1Geno, group2Geno]
 
 
-## Return the mean ALT allele frequency difference between two groups in the window
+## Return the mean ALT allele frequency difference between two groups in the window, calculated by allel package.
+def meanAlleleFreqDiffAllel(genoArray, groupIDs):
+    if type(genoArray) == int:
+    # if no records in this window
+        return 'NA'
+
+    meanAlleleFreqs = []
+    for groupID in groupIDs:
+        alleleCount = genoArray.count_alleles(subpop=groupID)
+        totalCount = np.sum(alleleCount)
+        if totalCount == 0:
+        # All missings for this subpopulation in this window
+            return 'NA'
+
+        try:
+            altCount = np.sum(alleleCount[:, 1])
+            meanAlleleFreqs.append(altCount / totalCount)
+        except IndexError:
+        # only invariants present in this window after filtering group individuals
+            meanAlleleFreqs.append(0.0)
+    if meanAlleleFreqs[0] == 0.0 and meanAlleleFreqs[1] == 0.0:
+    # if no variants present after group individual filtering
+        return 'NA'
+    else:
+        return abs(meanAlleleFreqs[0] - meanAlleleFreqs[1])
+
+## OLD: Return the mean ALT allele frequency difference between two groups in the window
 def meanAlleleFreqDiff(records, groupsGeno):
 # groupsGeno is a list of two lists containing the genotypes of each group
 # ignore missing genotypes - they are not included in the calculation
@@ -91,4 +158,31 @@ def meanAlleleFreqDiff(records, groupsGeno):
         groupAltFreqs.append(groupAltFreq)
 
     return abs(groupAltFreqs[0] - groupAltFreqs[1])
-    
+
+
+## Calculate FST score between two groups
+def wcFst(genoArray, groupIDs, reportA=False):
+# reportA: whether to report the variance component a (among groups) as a absolute divergence statistics
+    if type(genoArray) == int:
+    # if no records in this window
+        if reportA:
+            return ['NA', 'NA']
+        else:
+            return 'NA'
+
+    a, b, c = al.weir_cockerham_fst(genoArray, groupIDs)
+
+    if np.sum(a) + np.sum(b) + np.sum(c) == 0.0:
+    # if only invariants present in the window
+        if reportA:
+            return ['NA', 'NA']
+        else:
+            return 'NA'
+
+    fst = np.sum(a) / (np.sum(a) + np.sum(b) + np.sum(c))
+
+    if reportA:
+        return [fst, np.sum(a)]
+    else:
+        return [fst]
+

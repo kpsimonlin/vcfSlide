@@ -3,6 +3,7 @@
 
 import argparse
 import vcf
+import window_stats as ws
 
 #### Argument parsing
 parser = argparse.ArgumentParser(
@@ -17,11 +18,19 @@ parser.add_argument('--snp-number', help='Output the number of SNPs in every win
 
 parser.add_argument('-G', '--group', help='The path to two files defining two groups of individual to compared, required for divergence statistics', nargs=2, default=0)
 parser.add_argument('--allele-freq-diff', help='Output the mean ALT allele frequency difference between groups in each window', action='store_true', default=False)
+parser.add_argument('--fst', help='Output Weir-Cockerham FST score between groups in each window', action='store_true', default=False)
+parser.add_argument('--var-comp', help='Output the numerator of the  Weir-Cockerham FST score between groups in each window', action='store_true', default=False)
+
 args = parser.parse_args()
+
 ## Check if --group present
 if args.group == 0:
     if args.allele_freq_diff:
         parser.error('--allle-freq-diff requires --group')
+    if args.fst:
+        parser.error('--fst requires --group')
+    if args.var_comp:
+        parser.error('--var-comp requires --group')
 
 vcfPath = args.vcf
 wSize = args.window_size
@@ -47,38 +56,49 @@ if args.snp_number:
     writeSN = open(outPrefix + '.snpnum.tsv', 'w')
 if args.allele_freq_diff:
     writeAFD = open(outPrefix + '.afdiff.tsv', 'w')
+if args.fst:
+    writeFST = open(outPrefix + '.fst.tsv', 'w')
+if args.var_comp:
+    writeVCP = open(outPrefix + '.varcom.tsv', 'w')
 
 
 ## Write the statistics for the records in the window
 def writeRecords(records, groupIDs):
 # groupIDs was called when the first record encountered; it defines the indices of two groups in the VCF samples
-    ## If has group information as input
-    if groupIDs != 0:
-        from window_stats import getGroupGenos
-        groupGenos = getGroupGenos(records, groupIDs)
-        # groupGenos = 0 if no records found in window
-        # groupGenos = [[['1/1', '0/1', ... ], [ ... ], ... ], [[ ... ], [ ... ], ... ]]
-        #                  Group 1 SNP 1        G1S2             G2S1     G2S2
 
     ## If output SNP positions
     if args.snp_position:
-        from window_stats import snpPositions
-        poss = snpPositions(records)
+        poss = ws.snpPositions(records)
         writeSP.write('\t'.join([str(x) for x in poss]) + '\n')
     
     ## if output snp number
     if args.snp_number:
-        from window_stats import snpNumber
-        num = snpNumber(records)
+        num = ws.snpNumber(records)
         writeSN.write(str(num) + '\n')
 
-    ## if output snp number
+    ## If has group information as input
+    if groupIDs != 0:
+        # convert records to genotypeArray object
+        genoArray = ws.toGenotypeArray(records)
+
+    ## If output mean allele frequency difference
     if args.allele_freq_diff:
-        from window_stats import meanAlleleFreqDiff
-        afd = meanAlleleFreqDiff(records, groupGenos)
+        afd = ws.meanAlleleFreqDiffAllel(genoArray, groupIDs)
         writeAFD.write(str(afd) + '\n')
 
+    ## If output FST
+    if args.fst:
+        if args.var_comp:
+            fst, varcomp = ws.wcFst(genoArray, groupIDs, reportA=True)
+            writeFST.write(str(fst) + '\n')
+            writeVCP.write(str(varcomp) + '\n')
+
+        else:
+            fst = ws.wcFst(genoArray, groupIDs)[0]
+        writeFST.write(str(fst) + '\n')
+
     return 0
+
 
 ## Write the start and end position of the window
 writeWSE = open(outPrefix + '.winpos.tsv', 'w')
@@ -106,8 +126,7 @@ for record in vcfReader:
 
         # get the group indices if --group is defined, this is for statistics require group definition
         if args.group != 0:
-            from window_stats import getGroupID
-            groupIDs = getGroupID(record, args.group)
+            groupIDs = ws.getGroupID(record, args.group)
         else:
             groupIDs = 0
 
