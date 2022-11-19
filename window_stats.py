@@ -5,6 +5,8 @@
 import numpy as np
 import allel as al
 import re
+import scipy
+import miscell
 
 ## Return the positions of SNPs in the window
 def snpPositions(records):
@@ -42,8 +44,8 @@ def getGroupID(record, group):
 
 
 ## Transfer the records in the window to a GenotypeArray object in scikit-allel package, ready for some divergence statistics calculation
-def toGenotypeArray(records):
-    if len(records) == 0:
+def toGenotypeArray(records, noRecord=False):
+    if noRecord:
         # return 0 if no SNPs in window
         return 0
 
@@ -80,33 +82,37 @@ def toGenotypeArray(records):
 
     return al.GenotypeArray(recordList)
 
-## OLD: Return the genotypes of the group individuals
-def getGroupGenos(records, groupIds):
-# group is a list containing two paths to two files recording two groups of individual IDs
-    if len(records) == 0:
-    # return 0 if no SNPs in window
-        return 0
 
-    group1Id = groupIds[0]
-    group2Id = groupIds[1]
+## Return a subset of the genoArray containing only the groups interested, return a new groupID list
+def subsetGenotypeArray(genoArray, groupIDs, noRecord=False):
+    if noRecord:
+        return [0, 0]
 
-    group1Geno = []     # list of group1 genotypes [['0/0', '0/1', ... ], [ ... ], ... ]
-    group2Geno = []     # list of group2 genotypes
-    for record in records:
-        # list for group1 genotypes in the current SNP ['0/0', '0/1', ... ]
-        group1SnpGeno = [record.samples[i]['GT'] for i in group1Id]
-        group1Geno.append(group1SnpGeno)
+    newGenoArray = genoArray.subset(sel1=groupIDs[0] + groupIDs[1])
+    newGroupIDs = [range(len(groupIDs[0])), range(len(groupIDs[0]), len(groupIDs[0]) + len(groupIDs[1]))]
+    return [newGenoArray, newGroupIDs]
 
-        # list for group2 genotypes in the current SNP
-        group2SnpGeno = [record.samples[i]['GT'] for i in group2Id]
-        group2Geno.append(group2SnpGeno)
 
-    return [group1Geno, group2Geno]
+## Check if genotypeArray contains invariants, remove them if specified
+def genoArrayInvar(genoArray, remove=True, noRecord=False):
+    if noRecord:
+        return [True, 0]
+
+    ac = genoArray.count_alleles()
+    isNv = ac.is_non_variant()
+    if all(isNv):
+        return [True, 0]
+
+    if remove:
+        removedArray = genoArray[[not x for x in isNv]]
+        return [False, removedArray]
+    else:
+        return[False, genoArray]
 
 
 ## Return the mean ALT allele frequency difference between two groups in the window, calculated by allel package.
-def meanAlleleFreqDiffAllel(genoArray, groupIDs):
-    if type(genoArray) == int:
+def meanAlleleFreqDiffAllel(genoArray, groupIDs, noRecord=False):
+    if noRecord:
     # if no records in this window
         return 'NA'
 
@@ -130,54 +136,18 @@ def meanAlleleFreqDiffAllel(genoArray, groupIDs):
     else:
         return abs(meanAlleleFreqs[0] - meanAlleleFreqs[1])
 
-## OLD: Return the mean ALT allele frequency difference between two groups in the window
-def meanAlleleFreqDiff(records, groupsGeno):
-# groupsGeno is a list of two lists containing the genotypes of each group
-# ignore missing genotypes - they are not included in the calculation
-    if groupsGeno == 0:
-    # return 'NA' if no SNP is in window
-        return 'NA'
-
-    groupAltFreqs = []
-    for gGeno in groupsGeno:
-    # gGeno = group genotypes, should be only two groups
-        count0 = 0  # count of REF allele
-        count1 = 0  # count of ALT allele
-        for snpGeno in gGeno:
-        # snpGeno = genotypes of individuals in a group
-            for ind in snpGeno:
-            # ind = individual genotype, e.g., '0/0'
-                count0 += ind.count('0')
-                count1 += ind.count('1')
-        
-        # if all missing, return NA (this happens because of group individual extraction)
-        if count0 + count1 == 0:
-            return 'NA'
-        # calculate mean allele frequency
-        groupAltFreq = count1/(count0 + count1)
-        groupAltFreqs.append(groupAltFreq)
-
-    return abs(groupAltFreqs[0] - groupAltFreqs[1])
-
 
 ## Calculate FST score between two groups
-def wcFst(genoArray, groupIDs, reportA=False):
+def wcFst(genoArray, groupIDs, reportA=False, noRecord=False):
 # reportA: whether to report the variance component a (among groups) as a absolute divergence statistics
-    if type(genoArray) == int:
+    if noRecord:
     # if no records in this window
         if reportA:
             return ['NA', 'NA']
         else:
-            return 'NA'
+            return ['NA']
 
     a, b, c = al.weir_cockerham_fst(genoArray, groupIDs)
-
-    if np.sum(a) + np.sum(b) + np.sum(c) == 0.0:
-    # if only invariants present in the window
-        if reportA:
-            return ['NA', 'NA']
-        else:
-            return 'NA'
 
     fst = np.sum(a) / (np.sum(a) + np.sum(b) + np.sum(c))
 
@@ -186,3 +156,58 @@ def wcFst(genoArray, groupIDs, reportA=False):
     else:
         return [fst]
 
+
+## Calculate CSV score between two groups
+## The Cluster Separation Score (CSS) measures genetic difference between all pairs of individuals as euclidean distance in two dimensions obtained from an MDS analysis of proportion sequence divergence.
+## The CSS score is the average distance between pairs of individuals belonging to different populations minus the average distance between pairs belonging to the same populations
+def css(genoArray, groupIDs, noRecord=False):
+# note that the genoArray here only contains the genotypes from the group interested, and groupIDs are adjusted.
+    if noRecord:
+        return 'NA'
+
+    # Adjust the genoArray to 0, 0.5, 1 genotypes; -1 for missing values
+    proGenoArray = genoArray.to_n_alt(fill=-1)/2
+
+    # Fill missing genotype to the mean of the group
+    for v in range(genoArray.n_variants):
+        for s in range(genoArray.n_samples):
+            if proGenoArray[v, s] == -1:
+            # if missing
+                if s < len(groupIDs[0]):
+                # if in group0
+                    proGenoArray[v, s] = np.mean(proGenoArray[v][groupIDs[0]])
+                else:
+                # if in group1
+                    proGenoArray[v, s] = np.mean(proGenoArray[v][groupIDs[1]])
+
+    # Calculate pairwise sequence distances, scaled to proportion sequence divergence when we adjusted the genoArray to 0, 0.5, 1 on the above step
+    psd = al.pairwise_distance(proGenoArray, metric='cityblock')
+
+    # Perform pcoa, a.k.a. classical multi-dimensional scaling
+    mds = al.pcoa(psd)[0]
+    # transpose and extract the first two axis of mds so that it's in the same format as genoArray
+    tranMds = np.transpose(mds)[:2, ]
+    
+    # Euclidean distance matrix calculation on the transposed MDS
+    eucd = al.pairwise_distance(tranMds, metric='euclidean')
+
+    s00 = 0.0    # sum of distance for within-group0 pairs
+    s01 = 0.0    # sum of distance for between-group pairs
+    s11 = 0.0    # sum of distance for within-group1 pairs
+    # Loop the matrix, define whether it's among or between populations
+    for i, eu in enumerate(eucd):
+        # get the individual IDs from each entry in the condensed distance matrix, here n = # samples
+        x, y = miscell.condensed_to_square(i, n=len(tranMds[0]))
+        if x < len(groupIDs) and y < len(groupIDs):
+            s00 += eu
+        elif (x < len(groupIDs[0]) and y >= len(groupIDs[0])) or (x >= len(groupIDs[0]) and y < len(groupIDs[0])):
+            s01 += eu
+        else:
+            s11 += eu
+
+    m = len(groupIDs[0])
+    n = len(groupIDs[1])
+
+    css = ( s01 / (m*n) ) - ( 1/(m+n) ) * ( s00/( (m-1)/2 ) + s11/( (n-1)/2 ) )
+
+    return css
