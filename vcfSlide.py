@@ -48,7 +48,8 @@ print('')
 
 
 #### Hidden parameters
-windowReportSize = 100     # the denominator of reporting window scanned
+windowReportSize = 100      # the denominator of reporting window scanned
+missThreshold = 0.9         # the threshold for missing rate in either group
 
 
 #### Function for writing output files for statistics
@@ -83,37 +84,45 @@ def writeRecords(records, groupIDs):
 
     ## If has group information as input
     noRecord = False    # a flag if there's no record in this window or no variants after subsetting
+
     if groupIDs != 0:
         # if no records present in this window
         if len(records) == 0:
             noRecord = True
-        # convert records to genotypeArray object and
+
+        ## Convert records to genotypeArray object and
         # subset the genoArray to contain only the two groups interested
         subGenoArray, subGroupIDs = ws.subsetGenotypeArray(ws.toGenotypeArray(records, noRecord=noRecord), groupIDs, noRecord=noRecord)
-        # check if only invariants remain, if not, remove the invariant sites
+
+        ## Check if only invariants remain, if not, remove the invariant sites
         ifAllInvar, varSubGenoArray = ws.genoArrayInvar(subGenoArray, remove=True, noRecord=noRecord)
         if ifAllInvar:
             noRecord = True
 
+        ## Check if the variants are missed for a certain threshold in either group
+        isMiss, mfVarSubGenoArray = ws.genoArrayMiss(varSubGenoArray, subGroupIDs, threshold=missThreshold, noRecord=noRecord)
+        if isMiss:
+            noRecord = True
+
         ## If output mean allele frequency difference
         if args.allele_freq_diff:
-            afd = ws.meanAlleleFreqDiffAllel(varSubGenoArray, subGroupIDs, noRecord=noRecord)
+            afd = ws.meanAlleleFreqDiffAllel(mfVarSubGenoArray, subGroupIDs, noRecord=noRecord)
             writeAFD.write(str(afd) + '\n')
 
         ## If output FST
         if args.fst:
             if args.var_comp:
-                fst, varcomp = ws.wcFst(varSubGenoArray, subGroupIDs, reportA=True, noRecord=noRecord)
+                fst, varcomp = ws.wcFst(mfVarSubGenoArray, subGroupIDs, reportA=True, noRecord=noRecord)
                 writeFST.write(str(fst) + '\n')
                 writeVCP.write(str(varcomp) + '\n')
 
             else:
-                fst = ws.wcFst(varSubGenoArray, subGroupIDs, noRecord=noRecord)[0]
+                fst = ws.wcFst(mfVarSubGenoArray, subGroupIDs, noRecord=noRecord)[0]
                 writeFST.write(str(fst) + '\n')
 
         ## If output CSS
         if args.css:
-            css = ws.css(varSubGenoArray, subGroupIDs, noRecord=noRecord)
+            css = ws.css(mfVarSubGenoArray, subGroupIDs, noRecord=noRecord)
             writeCSS.write(str(css) + '\n')
 
     return 0

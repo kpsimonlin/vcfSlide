@@ -89,7 +89,7 @@ def subsetGenotypeArray(genoArray, groupIDs, noRecord=False):
         return [0, 0]
 
     newGenoArray = genoArray.subset(sel1=groupIDs[0] + groupIDs[1])
-    newGroupIDs = [range(len(groupIDs[0])), range(len(groupIDs[0]), len(groupIDs[0]) + len(groupIDs[1]))]
+    newGroupIDs = [list(range(len(groupIDs[0]))), list(range(len(groupIDs[0]), len(groupIDs[0]) + len(groupIDs[1])))]
     return [newGenoArray, newGroupIDs]
 
 
@@ -99,16 +99,44 @@ def genoArrayInvar(genoArray, remove=True, noRecord=False):
         return [True, 0]
 
     ac = genoArray.count_alleles()
-    isNv = ac.is_non_variant()
+    isNv = ac.is_non_segregating()
     if all(isNv):
         return [True, 0]
 
     if remove:
         removedArray = genoArray[[not x for x in isNv]]
+
         return [False, removedArray]
     else:
         return[False, genoArray]
 
+
+## Filter the per-group missing rate of a genotypeArray and it's associated groupID
+def genoArrayMiss(genoArray, groupIDs, threshold=1.0, noRecord=False):
+# default: remove variants that are all missings in either group
+    if noRecord:
+        return [True, 0]
+
+    removeVar = []  # list for the variant ID to be removed
+    for groupID in groupIDs:
+        groupGenoArray = genoArray.subset(sel1=groupID)
+        for i, var in enumerate(groupGenoArray.is_missing()):
+        # loop through an array of missing value boolean flags
+            freqMiss = np.count_nonzero(var) / len(var)
+            if freqMiss >= threshold:
+                if i not in removeVar:
+                    removeVar.append(i)
+
+    if len(removeVar) == len(groupGenoArray):
+    # if all of the variants are missing in either group
+        return [True, 0]
+
+    keptVar = []
+    for i in range(len(groupGenoArray)):
+        if i not in removeVar:
+            keptVar.append(i)
+
+    return [False, genoArray.subset(sel0=keptVar)]
 
 ## Return the mean ALT allele frequency difference between two groups in the window, calculated by allel package.
 def meanAlleleFreqDiffAllel(genoArray, groupIDs, noRecord=False):
@@ -148,6 +176,12 @@ def wcFst(genoArray, groupIDs, reportA=False, noRecord=False):
             return ['NA']
 
     a, b, c = al.weir_cockerham_fst(genoArray, groupIDs)
+
+    for x, i in enumerate(a):
+        isNan = i != i
+        if isNan.all():
+            print(np.array(genoArray[x][groupIDs[0]]))
+            print(np.array(genoArray[x][groupIDs[1]]))
 
     fst = np.sum(a) / (np.sum(a) + np.sum(b) + np.sum(c))
 
