@@ -200,19 +200,21 @@ def css(genoArray, groupIDs, noRecord=False):
         return 'NA'
 
     # Adjust the genoArray to 0, 0.5, 1 genotypes; -1 for missing values
-    proGenoArray = genoArray.to_n_alt(fill=-1)/2
+    proGenoArray = genoArray.to_n_alt(fill=-2)/2
 
     # Fill missing genotype to the mean of the group
     for v in range(genoArray.n_variants):
         for s in range(genoArray.n_samples):
-            if proGenoArray[v, s] == -1:
+            if proGenoArray[v, s] == -1.0:
             # if missing
                 if s < len(groupIDs[0]):
                 # if in group0
-                    proGenoArray[v, s] = np.mean(proGenoArray[v][groupIDs[0]])
+                    group0Geno = proGenoArray[v][groupIDs[0]]
+                    proGenoArray[v, s] = np.mean([x for x in group0Geno if x >= 0.0])
                 else:
                 # if in group1
-                    proGenoArray[v, s] = np.mean(proGenoArray[v][groupIDs[1]])
+                    group1Geno = proGenoArray[v][groupIDs[1]]
+                    proGenoArray[v, s] = np.mean([x for x in group1Geno if x >= 0.0])
 
     # Calculate pairwise sequence distances, scaled to proportion sequence divergence when we adjusted the genoArray to 0, 0.5, 1 on the above step
     psd = al.pairwise_distance(proGenoArray, metric='cityblock')
@@ -232,7 +234,7 @@ def css(genoArray, groupIDs, noRecord=False):
     for i, eu in enumerate(eucd):
         # get the individual IDs from each entry in the condensed distance matrix, here n = # samples
         x, y = miscell.condensed_to_square(i, n=len(tranMds[0]))
-        if x < len(groupIDs) and y < len(groupIDs):
+        if x < len(groupIDs[0]) and y < len(groupIDs[0]):
             s00 += eu
         elif (x < len(groupIDs[0]) and y >= len(groupIDs[0])) or (x >= len(groupIDs[0]) and y < len(groupIDs[0])):
             s01 += eu
