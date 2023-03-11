@@ -138,6 +138,35 @@ def genoArrayMiss(genoArray, groupIDs, threshold=1.0, noRecord=False):
 
     return [False, genoArray.subset(sel0=keptVar)]
 
+
+## Test if the minor allele frequencies in both groups are below a certain threshold
+def genoArrayMAF(genoArray, groupIDs, threshold, noRecord=False):
+# default: remove variants that are all missings in either group
+    if noRecord:
+        return [True, 0]
+
+    removeVar = []  # list for the variant ID to be removed
+    for groupID in groupIDs:
+        groupGenoArray = genoArray.subset(sel1=groupID)
+        for i, ac in enumerate(groupGenoArray.count_alleles()):
+        # loop through an array of allele counts for each variant
+            freq = ac[1] / np.sum(ac)
+            if freq < threshold:
+                if i not in removeVar:
+                    removeVar.append(i)
+
+    if len(removeVar) == len(groupGenoArray):
+    # if all of the variants are filtered out in either group
+        return [True, 0]
+
+    keptVar = []
+    for i in range(len(groupGenoArray)):
+        if i not in removeVar:
+            keptVar.append(i)
+
+    return [False, genoArray.subset(sel0=keptVar)]
+        
+
 ## Return the mean ALT allele frequency difference between two groups in the window, calculated by allel package.
 def meanAlleleFreqDiffAllel(genoArray, groupIDs, noRecord=False):
     if noRecord:
@@ -148,21 +177,13 @@ def meanAlleleFreqDiffAllel(genoArray, groupIDs, noRecord=False):
     for groupID in groupIDs:
         alleleCount = genoArray.count_alleles(subpop=groupID)
         totalCount = np.sum(alleleCount)
-        if totalCount == 0:
+        #if totalCount == 0:
         # All missings for this subpopulation in this window
-            return 'NA'
+        #    return 'NA'
+        altCount = np.sum(alleleCount[:, 1])
+        meanAlleleFreqs.append(altCount / totalCount)
 
-        try:
-            altCount = np.sum(alleleCount[:, 1])
-            meanAlleleFreqs.append(altCount / totalCount)
-        except IndexError:
-        # only invariants present in this window after filtering group individuals
-            meanAlleleFreqs.append(0.0)
-    if meanAlleleFreqs[0] == 0.0 and meanAlleleFreqs[1] == 0.0:
-    # if no variants present after group individual filtering
-        return 'NA'
-    else:
-        return abs(meanAlleleFreqs[0] - meanAlleleFreqs[1])
+    return abs(meanAlleleFreqs[0] - meanAlleleFreqs[1])
 
 
 ## Calculate FST score between two groups
@@ -247,3 +268,14 @@ def css(genoArray, groupIDs, noRecord=False):
     css = ( s01 / (m*n) ) - ( 1/(m+n) ) * ( s00/( (m-1)/2 ) + s11/( (n-1)/2 ) )
 
     return css
+
+
+## Calculate dXY score between two groups
+## dXY defines the pairwise nucleotide distance between the marine and freshwater group.
+def dxy(genoArray, groupIDs, windowSize, noRecord=False):
+    if noRecord:
+    # if no records in this window
+        return 'NA'
+
+    dxy = np.mean(al.mean_pairwise_difference_between(genoArray.count_alleles(subpop=groupIDs[0]), genoArray.count_alleles(subpop=groupIDs[1]))) / windowSize
+    return dxy

@@ -9,18 +9,32 @@ import window_stats as ws
 parser = argparse.ArgumentParser(
                 description='Iterate through user-defined sliding windows on a VCF file and apply statistics on them.')
 
+## Required arguments
 parser.add_argument('-v', '--vcf', help='The path of the input VCF file', required=True)
 parser.add_argument('-w', '--window-size', help='The size of the window', required=True, type=int)
 parser.add_argument('-g', '--gap', help='The gap for every window slide', required=True, type=int)
 parser.add_argument('-o', '--output-prefix', help='The path and prefix of output files', required=True)
+
+## General SNP information
 parser.add_argument('--snp-position', help='Output the positions of SNPs in every window', action='store_true', default=False)
 parser.add_argument('--snp-number', help='Output the number of SNPs in every window', action='store_true', default=False)
 
+## Divergence score
 parser.add_argument('-G', '--group', help='The path to two files defining two groups of individual to compared, required for divergence statistics', nargs=2, default=0)
 parser.add_argument('--allele-freq-diff', help='Output the mean ALT allele frequency difference between groups in each window', action='store_true', default=False)
 parser.add_argument('--fst', help='Output Weir-Cockerham FST score between groups in each window', action='store_true', default=False)
 parser.add_argument('--var-comp', help='Output the numerator of the  Weir-Cockerham FST score between groups in each window', action='store_true', default=False)
 parser.add_argument('--css', help='Output the Cluster Separation Score (CSS) by Jones et al. (2012) in each window', action='store_true', default=False)
+parser.add_argument('--dxy', help='Output the dXY score in each window', action='store_true', default=False)
+
+## SNP filtering options
+parser.add_argument('--missing', help='The missingness threshold for both groups', type=float, default=0.9)
+parser.add_argument('--maf', help='The minor allele frequency threshold for both groups', type=float, default=0.1)
+
+## Permutation settings
+parser.add_argument('-P', '--permutation', help='Whether to perform permutation and output p-values', action='store_true', default=False)
+parser.add_argument('--max-permutation', help='The maximum permutation number to perform', type=int, default=100000)
+parser.add_argument('--min-permutation', help='The minimum permutation number to skip with values equal to or higher than the observed value', type=int, default=10)
 
 args = parser.parse_args()
 
@@ -34,11 +48,18 @@ if args.group == 0:
         parser.error('--var-comp requires --group')
     if args.css:
         parser.error('--css requires --group')
+    if args.dxy:
+        parser.error('--dxy requires --group')
+    if args.permutation:
+        parser.error('--permutation requires --group')
 
 vcfPath = args.vcf
 wSize = args.window_size
 gap = args.gap
 outPrefix = args.output_prefix
+missThreshold = args.missing
+mafThreshold = args.maf
+permu = args.permutation
 
 ## Print argument inputs
 print('Arguments:')
@@ -49,7 +70,6 @@ print('')
 
 #### Hidden parameters
 windowReportSize = 100      # the denominator of reporting window scanned
-missThreshold = 0.9         # the threshold for missing rate in either group
 
 
 #### Function for writing output files for statistics
@@ -66,10 +86,12 @@ if args.var_comp:
     writeVCP = open(outPrefix + '.varcom.tsv', 'w')
 if args.css:
     writeCSS = open(outPrefix + '.css.tsv', 'w')
+if args.dxy:
+    writeDXY = open(outPrefix + '.dxy.tsv', 'w')
 
 
 ## Write the statistics for the records in the window
-def writeRecords(records, groupIDs):
+def writeRecords(records, groupIDs, wSize):
 # groupIDs was called when the first record encountered; it defines the indices of two groups in the VCF samples
 
     ## If output SNP positions
@@ -95,35 +117,45 @@ def writeRecords(records, groupIDs):
         subGenoArray, subGroupIDs = ws.subsetGenotypeArray(ws.toGenotypeArray(records, noRecord=noRecord), groupIDs, noRecord=noRecord)
 
         ## Check if only invariants remain, if not, remove the invariant sites
-        ifAllInvar, varSubGenoArray = ws.genoArrayInvar(subGenoArray, remove=True, noRecord=noRecord)
+        ifAllInvar, subGenoArray = ws.genoArrayInvar(subGenoArray, remove=True, noRecord=noRecord)
         if ifAllInvar:
             noRecord = True
 
         ## Check if the variants are missed for a certain threshold in either group
-        isMiss, mfVarSubGenoArray = ws.genoArrayMiss(varSubGenoArray, subGroupIDs, threshold=missThreshold, noRecord=noRecord)
+        isMiss, subGenoArray = ws.genoArrayMiss(subGenoArray, subGroupIDs, threshold=missThreshold, noRecord=noRecord)
         if isMiss:
+            noRecord = True
+
+        ## Check if the MAF of the variants are lower than a specified threshold in either group
+        lowMAF, subGenoArray = ws.genoArrayMAF(subGenoArray, subGroupIDs, threshold=mafThreshold, noRecord=noRecord)
+        if lowMAF:
             noRecord = True
 
         ## If output mean allele frequency difference
         if args.allele_freq_diff:
-            afd = ws.meanAlleleFreqDiffAllel(mfVarSubGenoArray, subGroupIDs, noRecord=noRecord)
+            afd = ws.meanAlleleFreqDiffAllel(subGenoArray, subGroupIDs, noRecord=noRecord)
             writeAFD.write(str(afd) + '\n')
 
         ## If output FST
         if args.fst:
             if args.var_comp:
-                fst, varcomp = ws.wcFst(mfVarSubGenoArray, subGroupIDs, reportA=True, noRecord=noRecord)
+                fst, varcomp = ws.wcFst(subGenoArray, subGroupIDs, reportA=True, noRecord=noRecord)
                 writeFST.write(str(fst) + '\n')
                 writeVCP.write(str(varcomp) + '\n')
 
             else:
-                fst = ws.wcFst(mfVarSubGenoArray, subGroupIDs, noRecord=noRecord)[0]
+                fst = ws.wcFst(subGenoArray, subGroupIDs, noRecord=noRecord)[0]
                 writeFST.write(str(fst) + '\n')
 
         ## If output CSS
         if args.css:
-            css = ws.css(mfVarSubGenoArray, subGroupIDs, noRecord=noRecord)
+            css = ws.css(subGenoArray, subGroupIDs, noRecord=noRecord)
             writeCSS.write(str(css) + '\n')
+
+        ## If output dXY
+        if args.dxy:
+            dxy = ws.dxy(subGenoArray, subGroupIDs, wSize, noRecord=noRecord)
+            writeDXY.write(str(dxy) + '\n')
 
     return 0
 
@@ -197,7 +229,7 @@ for record in vcfReader:
                         indiTBD.append(i)
 
             ## Output statistics from the records in the window
-            writeRecords(outRecords, groupIDs)
+            writeRecords(outRecords, groupIDs, wSize=wSize)
             writeWindowStartEnd(start, wSize)
 
             ## Remove the start of the leftest window from starts
@@ -218,7 +250,7 @@ for start in starts:
     for r in openRecords:
         if r.POS >= start and r.POS <= end:
             outRecords.append(r)
-    writeRecords(outRecords, groupIDs)
+    writeRecords(outRecords, groupIDs, wSize=wSize)
     writeWindowStartEnd(start, wSize)
 
 
@@ -235,6 +267,8 @@ if args.var_comp:
     writeVCP.close()
 if args.css:
     writeCSS.close()
+if args.dxy:
+    writeDXY.close()
 
 
 #### Final output
