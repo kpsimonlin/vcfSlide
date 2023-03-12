@@ -3,7 +3,10 @@
 
 import argparse
 import vcf
+import sys
+import random
 import window_stats as ws
+import miscell
 
 #### Argument parsing
 parser = argparse.ArgumentParser(
@@ -34,7 +37,8 @@ parser.add_argument('--maf', help='The minor allele frequency threshold for both
 ## Permutation settings
 parser.add_argument('-P', '--permutation', help='Whether to perform permutation and output p-values', action='store_true', default=False)
 parser.add_argument('--max-permutation', help='The maximum permutation number to perform', type=int, default=100000)
-parser.add_argument('--min-permutation', help='The minimum permutation number to skip with values equal to or higher than the observed value', type=int, default=10)
+parser.add_argument('--max-extreme', help='The maximum number of permutation score equal to or more extreme than the observed value before calculating p-value', type=int, default=10)
+parser.add_argument('--default-p', help='The default p-value when the permutation exceeds maximum number', type=float, default=5e-7)
 
 args = parser.parse_args()
 
@@ -59,7 +63,6 @@ gap = args.gap
 outPrefix = args.output_prefix
 missThreshold = args.missing
 mafThreshold = args.maf
-permu = args.permutation
 
 ## Print argument inputs
 print('Arguments:')
@@ -74,25 +77,51 @@ windowReportSize = 100      # the denominator of reporting window scanned
 
 #### Function for writing output files for statistics
 ## Open output files
+writeResult = open(outPrefix + '.result.tsv', 'w')
+resultHeader = []
 if args.snp_position:
     writeSP = open(outPrefix + '.snppos.tsv', 'w')
 if args.snp_number:
-    writeSN = open(outPrefix + '.snpnum.tsv', 'w')
+    resultHeader.append('SNP_number')
 if args.allele_freq_diff:
-    writeAFD = open(outPrefix + '.afdiff.tsv', 'w')
+    resultHeader.append('Allele_freq_diff')
+    if args.permutation:
+        resultHeader.append('AFD_p')
 if args.fst:
-    writeFST = open(outPrefix + '.fst.tsv', 'w')
+    resultHeader.append('FST')
+    if args.permutation:
+        resultHeader.append('FST_p')
 if args.var_comp:
-    writeVCP = open(outPrefix + '.varcom.tsv', 'w')
+    resultHeader.append('Variance_comp')
+    if args.permutation:
+        resultHeader.append('VRC_p')
 if args.css:
-    writeCSS = open(outPrefix + '.css.tsv', 'w')
+    resultHeader.append('CSS')
+    if args.permutation:
+        resultHeader.append('CSS_p')
 if args.dxy:
-    writeDXY = open(outPrefix + '.dxy.tsv', 'w')
+    resultHeader.append('dXY')
+    if args.permutation:
+        resultHeader.append('dXY_p')
+writeResult.write('\t'.join(resultHeader) + '\n')
+
+
+## When skipping the divergence score calculation part
+def skipLoop(results, resultHeader):
+    if args.snp_number:
+        naNum = len(resultHeader) - 1
+    else:
+        naNum = len(resultHeader)
+    for i in range(naNum):
+        results.append('NA')
+    writeResult.write('\t'.join(results) + '\n') 
+    return 0
 
 
 ## Write the statistics for the records in the window
-def writeRecords(records, groupIDs, wSize):
+def writeRecords(records, groupIDs, wSize, resultHeader):
 # groupIDs was called when the first record encountered; it defines the indices of two groups in the VCF samples
+    results = []
 
     ## If output SNP positions
     if args.snp_position:
@@ -102,60 +131,71 @@ def writeRecords(records, groupIDs, wSize):
     ## if output snp number
     if args.snp_number:
         num = ws.snpNumber(records)
-        writeSN.write(str(num) + '\n')
-
-    ## If has group information as input
-    noRecord = False    # a flag if there's no record in this window or no variants after subsetting
+        results.append(str(num))
 
     if groupIDs != 0:
         # if no records present in this window
         if len(records) == 0:
-            noRecord = True
+            skipLoop(results, resultHeader)
+            return 0
 
         ## Convert records to genotypeArray object and
         # subset the genoArray to contain only the two groups interested
-        subGenoArray, subGroupIDs = ws.subsetGenotypeArray(ws.toGenotypeArray(records, noRecord=noRecord), groupIDs, noRecord=noRecord)
+        subGenoArray, subGroupIDs = ws.subsetGenotypeArray(ws.toGenotypeArray(records), groupIDs)
 
         ## Check if only invariants remain, if not, remove the invariant sites
-        ifAllInvar, subGenoArray = ws.genoArrayInvar(subGenoArray, remove=True, noRecord=noRecord)
+        ifAllInvar, subGenoArray = ws.genoArrayInvar(subGenoArray, remove=True)
         if ifAllInvar:
-            noRecord = True
+            skipLoop(results, resultHeader)
+            return 0
 
         ## Check if the variants are missed for a certain threshold in either group
-        isMiss, subGenoArray = ws.genoArrayMiss(subGenoArray, subGroupIDs, threshold=missThreshold, noRecord=noRecord)
+        isMiss, subGenoArray = ws.genoArrayMiss(subGenoArray, subGroupIDs, threshold=missThreshold)
         if isMiss:
-            noRecord = True
+            skipLoop(results, resultHeader)
+            return 0
 
         ## Check if the MAF of the variants are lower than a specified threshold in either group
-        lowMAF, subGenoArray = ws.genoArrayMAF(subGenoArray, subGroupIDs, threshold=mafThreshold, noRecord=noRecord)
+        lowMAF, subGenoArray = ws.genoArrayMAF(subGenoArray, subGroupIDs, threshold=mafThreshold)
         if lowMAF:
-            noRecord = True
+            skipLoop(results, resultHeader)
+            return 0
+
+        ## If doing permutation, select a random seed for the combination iterator
+        seed = random.randint(0, sys.maxsize)
 
         ## If output mean allele frequency difference
         if args.allele_freq_diff:
-            afd = ws.meanAlleleFreqDiffAllel(subGenoArray, subGroupIDs, noRecord=noRecord)
-            writeAFD.write(str(afd) + '\n')
+            afd = ws.meanAlleleFreqDiffAllel(subGenoArray, subGroupIDs)
+            results.append(str(afd))
+            if args.permutation:
+                combIter = miscell.randomComb(subGroupIDs, seed=seed)
+                p = miscell.permuP(afd, ws.meanAlleleFreqDiffAllel, combIter, args.max_permutation, args.max_extreme, args.default_p, subGenoArray, groupIDs=subGroupIDs)
+                results.append(str(p))
+            ##### too slow
 
         ## If output FST
         if args.fst:
-            if args.var_comp:
-                fst, varcomp = ws.wcFst(subGenoArray, subGroupIDs, reportA=True, noRecord=noRecord)
-                writeFST.write(str(fst) + '\n')
-                writeVCP.write(str(varcomp) + '\n')
+            fst = ws.wcFst(subGenoArray, subGroupIDs)
+            results.append(str(fst))
 
-            else:
-                fst = ws.wcFst(subGenoArray, subGroupIDs, noRecord=noRecord)[0]
-                writeFST.write(str(fst) + '\n')
+        ## if output variance component
+        if args.var_comp:
+            varcomp = ws.wcVarComp(subGenoArray, subGroupIDs)
+            results.append(str(varcomp))
 
         ## If output CSS
         if args.css:
-            css = ws.css(subGenoArray, subGroupIDs, noRecord=noRecord)
-            writeCSS.write(str(css) + '\n')
+            css = ws.css(subGenoArray, subGroupIDs)
+            results.append(str(css))
 
         ## If output dXY
         if args.dxy:
-            dxy = ws.dxy(subGenoArray, subGroupIDs, wSize, noRecord=noRecord)
-            writeDXY.write(str(dxy) + '\n')
+            dxy = ws.dxy(subGenoArray, subGroupIDs, wSize)
+            results.append(str(dxy))
+
+        ## Write results
+        writeResult.write('\t'.join(results) + '\n')
 
     return 0
 
@@ -229,7 +269,7 @@ for record in vcfReader:
                         indiTBD.append(i)
 
             ## Output statistics from the records in the window
-            writeRecords(outRecords, groupIDs, wSize=wSize)
+            writeRecords(outRecords, groupIDs, wSize=wSize, resultHeader=resultHeader)
             writeWindowStartEnd(start, wSize)
 
             ## Remove the start of the leftest window from starts
@@ -250,7 +290,7 @@ for start in starts:
     for r in openRecords:
         if r.POS >= start and r.POS <= end:
             outRecords.append(r)
-    writeRecords(outRecords, groupIDs, wSize=wSize)
+    writeRecords(outRecords, groupIDs, wSize=wSize, resultHeader=resultHeader)
     writeWindowStartEnd(start, wSize)
 
 

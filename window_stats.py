@@ -44,11 +44,7 @@ def getGroupID(record, group):
 
 
 ## Transfer the records in the window to a GenotypeArray object in scikit-allel package, ready for some divergence statistics calculation
-def toGenotypeArray(records, noRecord=False):
-    if noRecord:
-        # return 0 if no SNPs in window
-        return 0
-
+def toGenotypeArray(records):
     recordList = []
     # will be filled with a three-dimentional list
     # 1st dimention: variants
@@ -84,20 +80,14 @@ def toGenotypeArray(records, noRecord=False):
 
 
 ## Return a subset of the genoArray containing only the groups interested, return a new groupID list
-def subsetGenotypeArray(genoArray, groupIDs, noRecord=False):
-    if noRecord:
-        return [0, 0]
-
+def subsetGenotypeArray(genoArray, groupIDs):
     newGenoArray = genoArray.subset(sel1=groupIDs[0] + groupIDs[1])
     newGroupIDs = [list(range(len(groupIDs[0]))), list(range(len(groupIDs[0]), len(groupIDs[0]) + len(groupIDs[1])))]
     return [newGenoArray, newGroupIDs]
 
 
 ## Check if genotypeArray contains invariants, remove them if specified
-def genoArrayInvar(genoArray, remove=True, noRecord=False):
-    if noRecord:
-        return [True, 0]
-
+def genoArrayInvar(genoArray, remove=True):
     ac = genoArray.count_alleles()
     isNv = ac.is_non_segregating()
     if all(isNv):
@@ -112,11 +102,8 @@ def genoArrayInvar(genoArray, remove=True, noRecord=False):
 
 
 ## Filter the per-group missing rate of a genotypeArray and it's associated groupID
-def genoArrayMiss(genoArray, groupIDs, threshold=1.0, noRecord=False):
+def genoArrayMiss(genoArray, groupIDs, threshold=1.0):
 # default: remove variants that are all missings in either group
-    if noRecord:
-        return [True, 0]
-
     removeVar = []  # list for the variant ID to be removed
     for groupID in groupIDs:
         groupGenoArray = genoArray.subset(sel1=groupID)
@@ -140,11 +127,8 @@ def genoArrayMiss(genoArray, groupIDs, threshold=1.0, noRecord=False):
 
 
 ## Test if the minor allele frequencies in both groups are below a certain threshold
-def genoArrayMAF(genoArray, groupIDs, threshold, noRecord=False):
+def genoArrayMAF(genoArray, groupIDs, threshold):
 # default: remove variants that are all missings in either group
-    if noRecord:
-        return [True, 0]
-
     removeVar = []  # list for the variant ID to be removed
     for groupID in groupIDs:
         groupGenoArray = genoArray.subset(sel1=groupID)
@@ -168,11 +152,7 @@ def genoArrayMAF(genoArray, groupIDs, threshold, noRecord=False):
         
 
 ## Return the mean ALT allele frequency difference between two groups in the window, calculated by allel package.
-def meanAlleleFreqDiffAllel(genoArray, groupIDs, noRecord=False):
-    if noRecord:
-    # if no records in this window
-        return 'NA'
-
+def meanAlleleFreqDiffAllel(genoArray, groupIDs):
     meanAlleleFreqs = []
     for groupID in groupIDs:
         alleleCount = genoArray.count_alleles(subpop=groupID)
@@ -187,39 +167,23 @@ def meanAlleleFreqDiffAllel(genoArray, groupIDs, noRecord=False):
 
 
 ## Calculate FST score between two groups
-def wcFst(genoArray, groupIDs, reportA=False, noRecord=False):
-# reportA: whether to report the variance component a (among groups) as a absolute divergence statistics
-    if noRecord:
-    # if no records in this window
-        if reportA:
-            return ['NA', 'NA']
-        else:
-            return ['NA']
-
+def wcFst(genoArray, groupIDs):
     a, b, c = al.weir_cockerham_fst(genoArray, groupIDs)
-
-    for x, i in enumerate(a):
-        isNan = i != i
-        if isNan.all():
-            print(np.array(genoArray[x][groupIDs[0]]))
-            print(np.array(genoArray[x][groupIDs[1]]))
-
     fst = np.sum(a) / (np.sum(a) + np.sum(b) + np.sum(c))
+    return fst
 
-    if reportA:
-        return [fst, np.sum(a)]
-    else:
-        return [fst]
+
+## Calculate variace component between two groups as a absolute divergence statistics
+def wcVarComp(genoArray, groupIDs):
+    a, b, c = al.weir_cockerham_fst(genoArray, groupIDs)
+    return np.sum(a)
 
 
 ## Calculate CSV score between two groups
 ## The Cluster Separation Score (CSS) measures genetic difference between all pairs of individuals as euclidean distance in two dimensions obtained from an MDS analysis of proportion sequence divergence.
 ## The CSS score is the average distance between pairs of individuals belonging to different populations minus the average distance between pairs belonging to the same populations
-def css(genoArray, groupIDs, noRecord=False):
+def css(genoArray, groupIDs):
 # note that the genoArray here only contains the genotypes from the group interested, and groupIDs are adjusted.
-    if noRecord:
-        return 'NA'
-
     # Adjust the genoArray to 0, 0.5, 1 genotypes; -1 for missing values
     proGenoArray = genoArray.to_n_alt(fill=-2)/2
 
@@ -272,10 +236,6 @@ def css(genoArray, groupIDs, noRecord=False):
 
 ## Calculate dXY score between two groups
 ## dXY defines the pairwise nucleotide distance between the marine and freshwater group.
-def dxy(genoArray, groupIDs, windowSize, noRecord=False):
-    if noRecord:
-    # if no records in this window
-        return 'NA'
-
+def dxy(genoArray, groupIDs, windowSize):
     dxy = np.mean(al.mean_pairwise_difference_between(genoArray.count_alleles(subpop=groupIDs[0]), genoArray.count_alleles(subpop=groupIDs[1]))) / windowSize
     return dxy
