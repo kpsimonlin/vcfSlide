@@ -7,6 +7,9 @@ import allel as al
 import re
 import scipy
 import miscell
+import time
+from itertools import combinations
+from scipy.spatial.distance import pdist, cdist
 
 ## Return the positions of SNPs in the window
 def snpPositions(records):
@@ -152,14 +155,11 @@ def genoArrayMAF(genoArray, groupIDs, threshold):
         
 
 ## Return the mean ALT allele frequency difference between two groups in the window, calculated by allel package.
-def meanAlleleFreqDiffAllel(genoArray, groupIDs):
+def meanAlleleFreqDiffAllel(genoArray, groupIDs, wSize=None):
     meanAlleleFreqs = []
     for groupID in groupIDs:
         alleleCount = genoArray.count_alleles(subpop=groupID)
         totalCount = np.sum(alleleCount)
-        #if totalCount == 0:
-        # All missings for this subpopulation in this window
-        #    return 'NA'
         altCount = np.sum(alleleCount[:, 1])
         meanAlleleFreqs.append(altCount / totalCount)
 
@@ -167,14 +167,14 @@ def meanAlleleFreqDiffAllel(genoArray, groupIDs):
 
 
 ## Calculate FST score between two groups
-def wcFst(genoArray, groupIDs):
+def wcFst(genoArray, groupIDs, wSize=None):
     a, b, c = al.weir_cockerham_fst(genoArray, groupIDs)
     fst = np.sum(a) / (np.sum(a) + np.sum(b) + np.sum(c))
     return fst
 
 
 ## Calculate variace component between two groups as a absolute divergence statistics
-def wcVarComp(genoArray, groupIDs):
+def wcVarComp(genoArray, groupIDs, wSize=None):
     a, b, c = al.weir_cockerham_fst(genoArray, groupIDs)
     return np.sum(a)
 
@@ -182,49 +182,38 @@ def wcVarComp(genoArray, groupIDs):
 ## Calculate CSV score between two groups
 ## The Cluster Separation Score (CSS) measures genetic difference between all pairs of individuals as euclidean distance in two dimensions obtained from an MDS analysis of proportion sequence divergence.
 ## The CSS score is the average distance between pairs of individuals belonging to different populations minus the average distance between pairs belonging to the same populations
-def css(genoArray, groupIDs):
+def css(genoArray, groupIDs, wSize=None):
 # note that the genoArray here only contains the genotypes from the group interested, and groupIDs are adjusted.
     # Adjust the genoArray to 0, 0.5, 1 genotypes; -1 for missing values
     proGenoArray = genoArray.to_n_alt(fill=-2)/2
 
     # Fill missing genotype to the mean of the group
     for v in range(genoArray.n_variants):
-        for s in range(genoArray.n_samples):
+        group0Geno = proGenoArray[v][groupIDs[0]]
+        group0Mean = np.mean(group0Geno[group0Geno >= 0.0])
+        group1Geno = proGenoArray[v][groupIDs[1]]
+        group1Mean = np.mean(group1Geno[group1Geno >= 0.0])
+        for s in groupIDs[0]:
             if proGenoArray[v, s] == -1.0:
             # if missing
-                if s < len(groupIDs[0]):
-                # if in group0
-                    group0Geno = proGenoArray[v][groupIDs[0]]
-                    proGenoArray[v, s] = np.mean([x for x in group0Geno if x >= 0.0])
-                else:
-                # if in group1
-                    group1Geno = proGenoArray[v][groupIDs[1]]
-                    proGenoArray[v, s] = np.mean([x for x in group1Geno if x >= 0.0])
+                proGenoArray[v, s] = group0Mean
+        for s in groupIDs[1]:
+            if proGenoArray[v, s] == -1.0:
+            # if missing
+                proGenoArray[v, s] = group1Mean
 
     # Calculate pairwise sequence distances, scaled to proportion sequence divergence when we adjusted the genoArray to 0, 0.5, 1 on the above step
     psd = al.pairwise_distance(proGenoArray, metric='cityblock')
 
-    # Perform pcoa, a.k.a. classical multi-dimensional scaling
-    mds = al.pcoa(psd)[0]
-    # transpose and extract the first two axis of mds so that it's in the same format as genoArray
-    tranMds = np.transpose(mds)[:2, ]
-    
-    # Euclidean distance matrix calculation on the transposed MDS
-    eucd = al.pairwise_distance(tranMds, metric='euclidean')
+    # Perform pcoa, a.k.a. classical multi-dimensional scaling; select the first 2 axis
+    mds = al.pcoa(psd)[0][:, [0, 1]]
 
-    s00 = 0.0    # sum of distance for within-group0 pairs
-    s01 = 0.0    # sum of distance for between-group pairs
-    s11 = 0.0    # sum of distance for within-group1 pairs
-    # Loop the matrix, define whether it's among or between populations
-    for i, eu in enumerate(eucd):
-        # get the individual IDs from each entry in the condensed distance matrix, here n = # samples
-        x, y = miscell.condensed_to_square(i, n=len(tranMds[0]))
-        if x < len(groupIDs[0]) and y < len(groupIDs[0]):
-            s00 += eu
-        elif (x < len(groupIDs[0]) and y >= len(groupIDs[0])) or (x >= len(groupIDs[0]) and y < len(groupIDs[0])):
-            s01 += eu
-        else:
-            s11 += eu
+    # Euclidean distance matrix calculation on the transposed MDS
+    mdsG0 = mds[groupIDs[0], :]
+    mdsG1 = mds[groupIDs[1], :]
+    s00 = np.sum(pdist(mdsG0, metric='euclidean'))
+    s11 = np.sum(pdist(mdsG1, metric='euclidean'))
+    s01 = np.sum(cdist(mdsG0, mdsG1, metric='euclidean'))
 
     m = len(groupIDs[0])
     n = len(groupIDs[1])
@@ -236,6 +225,6 @@ def css(genoArray, groupIDs):
 
 ## Calculate dXY score between two groups
 ## dXY defines the pairwise nucleotide distance between the marine and freshwater group.
-def dxy(genoArray, groupIDs, windowSize):
-    dxy = np.mean(al.mean_pairwise_difference_between(genoArray.count_alleles(subpop=groupIDs[0]), genoArray.count_alleles(subpop=groupIDs[1]))) / windowSize
+def dxy(genoArray, groupIDs, wSize):
+    dxy = np.sum(al.mean_pairwise_difference_between(genoArray.count_alleles(subpop=groupIDs[0]), genoArray.count_alleles(subpop=groupIDs[1]))) / wSize
     return dxy

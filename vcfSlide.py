@@ -79,30 +79,35 @@ windowReportSize = 100      # the denominator of reporting window scanned
 ## Open output files
 writeResult = open(outPrefix + '.result.tsv', 'w')
 resultHeader = []
+
 if args.snp_position:
     writeSP = open(outPrefix + '.snppos.tsv', 'w')
 if args.snp_number:
     resultHeader.append('SNP_number')
+
 if args.allele_freq_diff:
     resultHeader.append('Allele_freq_diff')
-    if args.permutation:
-        resultHeader.append('AFD_p')
 if args.fst:
     resultHeader.append('FST')
-    if args.permutation:
-        resultHeader.append('FST_p')
 if args.var_comp:
     resultHeader.append('Variance_comp')
-    if args.permutation:
-        resultHeader.append('VRC_p')
 if args.css:
     resultHeader.append('CSS')
-    if args.permutation:
-        resultHeader.append('CSS_p')
 if args.dxy:
     resultHeader.append('dXY')
-    if args.permutation:
+
+if args.permutation:
+    if args.allele_freq_diff:
+        resultHeader.append('AFD_p')
+    if args.fst:
+        resultHeader.append('FST_p')
+    if args.var_comp:
+        resultHeader.append('VRC_p')
+    if args.css:
+        resultHeader.append('CSS_p')
+    if args.dxy:
         resultHeader.append('dXY_p')
+    
 writeResult.write('\t'.join(resultHeader) + '\n')
 
 
@@ -161,38 +166,55 @@ def writeRecords(records, groupIDs, wSize, resultHeader):
             skipLoop(results, resultHeader)
             return 0
 
-        ## If doing permutation, select a random seed for the combination iterator
-        seed = random.randint(0, sys.maxsize)
+        if args.permutation:
+            stats = []      # a list of the function for permutation test
+            scores = []     # a list of the divergence scores for permutation test
 
         ## If output mean allele frequency difference
         if args.allele_freq_diff:
             afd = ws.meanAlleleFreqDiffAllel(subGenoArray, subGroupIDs)
             results.append(str(afd))
             if args.permutation:
-                combIter = miscell.randomComb(subGroupIDs, seed=seed)
-                p = miscell.permuP(afd, ws.meanAlleleFreqDiffAllel, combIter, args.max_permutation, args.max_extreme, args.default_p, subGenoArray, groupIDs=subGroupIDs)
-                results.append(str(p))
-            ##### too slow
+                stats.append(ws.meanAlleleFreqDiffAllel)
+                scores.append(afd)
 
         ## If output FST
         if args.fst:
             fst = ws.wcFst(subGenoArray, subGroupIDs)
             results.append(str(fst))
+            if args.permutation:
+                stats.append(ws.wcFst)
+                scores.append(fst)
 
         ## if output variance component
         if args.var_comp:
             varcomp = ws.wcVarComp(subGenoArray, subGroupIDs)
             results.append(str(varcomp))
+            if args.permutation:
+                stats.append(ws.wcVarComp)
+                scores.append(varcomp)
 
         ## If output CSS
         if args.css:
             css = ws.css(subGenoArray, subGroupIDs)
             results.append(str(css))
+            if args.permutation:
+                stats.append(ws.css)
+                scores.append(css)
 
         ## If output dXY
         if args.dxy:
             dxy = ws.dxy(subGenoArray, subGroupIDs, wSize)
             results.append(str(dxy))
+            if args.permutation:
+                stats.append(ws.dxy)
+                scores.append(dxy)
+
+        ## If doing permuation test
+        if args.permutation:
+            combIter = miscell.randomComb(subGroupIDs)
+            ps = miscell.permuP(scores, stats, combIter, args.max_permutation, args.max_extreme, args.default_p, genoArray=subGenoArray, groupIDs=subGroupIDs, wSize=wSize)
+            results += [str(x) for x in ps]
 
         ## Write results
         writeResult.write('\t'.join(results) + '\n')
