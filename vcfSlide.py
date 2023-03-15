@@ -6,7 +6,6 @@ import vcf
 import sys
 import random
 import window_stats as ws
-import miscell
 
 #### Argument parsing
 parser = argparse.ArgumentParser(
@@ -38,7 +37,7 @@ parser.add_argument('--maf', help='The minor allele frequency threshold for both
 parser.add_argument('-P', '--permutation', help='Whether to perform permutation and output p-values', action='store_true', default=False)
 parser.add_argument('--max-permutation', help='The maximum permutation number to perform', type=int, default=100000)
 parser.add_argument('--max-extreme', help='The maximum number of permutation score equal to or more extreme than the observed value before calculating p-value', type=int, default=10)
-parser.add_argument('--default-p', help='The default p-value when the permutation exceeds maximum number', type=float, default=5e-7)
+parser.add_argument('--min-extreme', help='The number of extreme values when there is no extreme value after maximum number of permutations', type=float, default=0.5)
 
 args = parser.parse_args()
 
@@ -133,7 +132,7 @@ def writeRecords(records, groupIDs, wSize, resultHeader):
         poss = ws.snpPositions(records)
         writeSP.write('\t'.join([str(x) for x in poss]) + '\n')
     
-    ## if output snp number
+    ## if output SNP number
     if args.snp_number:
         num = ws.snpNumber(records)
         results.append(str(num))
@@ -161,10 +160,10 @@ def writeRecords(records, groupIDs, wSize, resultHeader):
             return 0
 
         ## Check if the MAF of the variants are lower than a specified threshold in either group
-        lowMAF, subGenoArray = ws.genoArrayMAF(subGenoArray, subGroupIDs, threshold=mafThreshold)
-        if lowMAF:
-            skipLoop(results, resultHeader)
-            return 0
+        #lowMAF, subGenoArray = ws.genoArrayMAF(subGenoArray, subGroupIDs, threshold=mafThreshold)
+        #if lowMAF:
+        #    skipLoop(results, resultHeader)
+        #    return 0
 
         if args.permutation:
             stats = []      # a list of the function for permutation test
@@ -212,8 +211,7 @@ def writeRecords(records, groupIDs, wSize, resultHeader):
 
         ## If doing permuation test
         if args.permutation:
-            combIter = miscell.randomComb(subGroupIDs)
-            ps = miscell.permuP(scores, stats, combIter, args.max_permutation, args.max_extreme, args.default_p, genoArray=subGenoArray, groupIDs=subGroupIDs, wSize=wSize)
+            ps = ws.permuP(scores, stats, args.max_permutation, args.max_extreme, args.min_extreme, genoArray=subGenoArray, groupIDs=subGroupIDs, wSize=wSize)
             results += [str(x) for x in ps]
 
         ## Write results

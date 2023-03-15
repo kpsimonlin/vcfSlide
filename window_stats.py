@@ -7,6 +7,7 @@ import allel as al
 import re
 import scipy
 import miscell
+import random
 import time
 from itertools import combinations
 from scipy.spatial.distance import pdist, cdist
@@ -137,7 +138,7 @@ def genoArrayMAF(genoArray, groupIDs, threshold):
         groupGenoArray = genoArray.subset(sel1=groupID)
         for i, ac in enumerate(groupGenoArray.count_alleles()):
         # loop through an array of allele counts for each variant
-            freq = ac[1] / np.sum(ac)
+            freq = min(ac) / np.sum(ac)
             if freq < threshold:
                 if i not in removeVar:
                     removeVar.append(i)
@@ -228,3 +229,73 @@ def css(genoArray, groupIDs, wSize=None):
 def dxy(genoArray, groupIDs, wSize):
     dxy = np.sum(al.mean_pairwise_difference_between(genoArray.count_alleles(subpop=groupIDs[0]), genoArray.count_alleles(subpop=groupIDs[1]))) / wSize
     return dxy
+
+## Permutation test on selected statistics, report the p-values
+def permuP(scores, stats, maxPerm, maxExtm, minExtm=0.5, *args, **kwargs):
+# Return the p-value of the given score using a permutation test
+# scores: a list of given divergence scores
+# stats: a list of functions calculating the divergence score
+# maxPerm: maximum number of permutations
+# maxExtm: output the p-value if this number of score that is more extreme than the given score is observed
+# minExtm: minimum number of extreme values if no extreme values were observed in permutations, minExtm / maxPerm = the given p-value of this situation
+    sTime = time.time()
+
+    extremeNum = [0] * len(stats)   # nuber of extreme values observed in permutations
+    returnP = [-1] * len(stats)     # the p-values that is going to be returned
+
+    genoArray = kwargs['genoArray']
+    decompGroupIDs = kwargs['groupIDs'][0] + kwargs['groupIDs'][1]
+    g0Len = len(kwargs['groupIDs'][0])
+    g1Len = len(kwargs['groupIDs'][1])
+
+    nPerm = 0
+    while True:
+        if nPerm == maxPerm:
+            break
+
+        print(nPerm)
+        print(extremeNum)
+        print(returnP)
+        print(time.time() - sTime)
+        print()
+        g0IDs = random.sample(decompGroupIDs, g0Len)
+        g1IDs = list(set(decompGroupIDs) - set(g0IDs))
+        newGroupIDs = [g0IDs, g1IDs]
+
+        # Test if at least one of the group is completely missing
+        isMiss, newGenoArray = genoArrayMiss(genoArray, newGroupIDs, threshold=1.0)
+        if isMiss:
+            continue
+        else:
+            kwargs['genoArray'] = newGenoArray
+            kwargs['groupIDs'] = newGroupIDs
+
+        # Call the divergence score function
+        for s, stat in enumerate(stats):
+            if extremeNum[s] < maxExtm:
+                permScore = stat(*args, **kwargs)
+
+                if permScore >= scores[s]:
+                # if the permutation score is as extreme as or more extreme than the observed score
+                    extremeNum[s] += 1
+
+                    if extremeNum[s] == maxExtm:
+                    # If the number of extreme score is equal to the set threshold, return the p-value of the permutation test
+                        returnP[s] = maxExtm / (nPerm + 1)
+
+                        if returnP.count(-1) == 0:
+                        # If all test reach maximum extreme values
+                            return returnP
+
+        nPerm += 1
+
+    # If the number of permutation loops exceeds the given threshold, report the given p-value for those statistics that have 0 extreme values, report p for the rest of the statistics with < maxExtm extreme values
+    for i, p in enumerate(returnP):
+        if p == -1:
+            en = extremeNum[i]
+            if en == 0:
+            # if no extreme values were observed, given p as there's minExtm extreme value observed
+                returnP[i] = minExtm / maxPerm
+            else:
+                returnP[i] = en / maxPerm
+    return returnP

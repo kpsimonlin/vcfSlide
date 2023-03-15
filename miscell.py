@@ -4,7 +4,7 @@
 import math
 import numpy as np
 from itertools import combinations
-from random import shuffle
+import random
 import time
 
 def calc_row_idx(k, n):
@@ -26,51 +26,58 @@ def randomComb(groupIDs):
 # groupIDs = [[0, 1, 2, 3], [4, 5, 6, 7]] for two group IDs.
     group1Len = len(groupIDs[0])
     mergedGroupIDs = groupIDs[0] + groupIDs[1]
-    shuffle(mergedGroupIDs)
+    random.shuffle(mergedGroupIDs)
     return combinations(mergedGroupIDs, group1Len)
 
-def permuP(scores, stats, combIter, maxPerm, maxExtm, maxP=5e-7, *args, **kwargs):
+def permuP(scores, stats, maxPerm, maxExtm, minExtm=0.5, *args, **kwargs):
 # Return the p-value of the given score using a permutation test
 # scores: a list of given divergence scores
 # stats: a list of functions calculating the divergence score
-# combIter: an iterator running randomized combinations of groupIDs for permutation test
 # maxPerm: maximum number of permutations
 # maxExtm: output the p-value if this number of score that is more extreme than the given score is observed
-# maxP: the p-value that will be return if maxPerm is reached
-    permNum = 1
-    extremeNum = [0] * len(stats)
-    returnP = [-1] * len(stats)    # the p-values that is going to be returned
-    decompGroupIDs = kwargs['groupIDs'][0] + kwargs['groupIDs'][1]
-    for g1IDs in combIter:
-        if permNum > maxPerm:
-        # If the number of permutation loops exceeds the given threshold, abort and report maxP for those statistics that haven't received maxExtm number of extreme values
-            for i, p in enumerate(returnP):
-                if p == -1:
-                    returnP[i] = maxP
-            return returnP
+# minExtm: minimum number of extreme values if no extreme values were observed in permutations, minExtm / maxPerm = the given p-value of this situation
+    sTime = time.time()
 
-        g1IDs = list(g1IDs)
-        g2IDs = [x for i, x in enumerate(decompGroupIDs) if x not in g1IDs]
-        newGroupIDs = [g1IDs, g2IDs]
+    extremeNum = [0] * len(stats)   # nuber of extreme values observed in permutations
+    returnP = [-1] * len(stats)     # the p-values that is going to be returned
+    decompGroupIDs = kwargs['groupIDs'][0] + kwargs['groupIDs'][1]
+    g0Len = len(kwargs['groupIDs'][0])
+    g1Len = len(kwargs['groupIDs'][1])
+    for i in range(maxPerm):
+        print(i)
+        print(extremeNum)
+        print(returnP)
+        print(time.time() - sTime)
+        print()
+        g0IDs = random.sample(decompGroupIDs, g0Len)
+        g1IDs = list(set(decompGroupIDs) - set(g0IDs))
+        newGroupIDs = [g0IDs, g1IDs]
         kwargs['groupIDs'] = newGroupIDs
 
-        sTime = time.time()
-
         # Call the divergence score function
-        for i, stat in enumerate(stats):
-            if extremeNum[i] < maxExtm:
+        for s, stat in enumerate(stats):
+            if extremeNum[s] < maxExtm:
                 permScore = stat(*args, **kwargs)
 
-                if permScore >= scores[i]:
+                if permScore >= scores[s]:
                 # if the permutation score is as extreme as or more extreme than the observed score
-                    extremeNum[i] += 1
-                    if extremeNum[i] == maxExtm:
+                    extremeNum[s] += 1
+
+                    if extremeNum[s] == maxExtm:
                     # If the number of extreme score is equal to the set threshold, return the p-value of the permutation test
-                        returnP[i] = maxExtm / permNum
-            print(str(i) + ' ' + str(time.time() - sTime))
-            sTime = time.time()
+                        returnP[s] = maxExtm / (i + 1)
 
-        permNum += 1
+                        if returnP.count(-1) == 0:
+                        # If all test reach maximum extreme values
+                            return returnP
 
-        print(permNum)
-        print(returnP)
+    # If the number of permutation loops exceeds the given threshold, report the given p-value for those statistics that have 0 extreme values, report p for the rest of the statistics with < maxExtm extreme values
+    for i, p in enumerate(returnP):
+        if p == -1:
+            en = extremeNum[i]
+            if en == 0:
+            # if no extreme values were observed, given p as there's minExtm extreme value observed
+                returnP[i] = minExtm / maxPerm
+            else:
+                returnP[i] = en / maxPerm
+    return returnP
