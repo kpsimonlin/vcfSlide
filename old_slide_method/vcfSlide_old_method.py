@@ -1,12 +1,11 @@
-## This program runs sliding windows on a given VCF file and applies statistics on them, using pysam package.
-## Author: Kung-Ping Lin; last editted: 20231031.
+## This program runs sliding windows on a given VCF file and applies statistics on them.
+## Author: Kung-Ping Lin; last editted: 20221108.
 
 import argparse
-from pysam import VariantFile
-import os
+import vcf
 import sys
 import random
-import window_stats as ws
+import window_stats_old_slide_method as ws
 import time
 
 #### Argument parsing
@@ -29,18 +28,17 @@ parser.add_argument('--allele-freq-diff', help='Output the mean ALT allele frequ
 parser.add_argument('--fst', help='Output Weir-Cockerham FST score between groups in each window', action='store_true', default=False)
 parser.add_argument('--var-comp', help='Output the numerator of the  Weir-Cockerham FST score between groups in each window', action='store_true', default=False)
 parser.add_argument('--css', help='Output the Cluster Separation Score (CSS) by Jones et al. (2012) in each window', action='store_true', default=False)
-parser.add_argument('--css-mod', help='Output the CSS-modified, which is similar to CSS but without MDS', action='store_true', default=False)
 parser.add_argument('--dxy', help='Output the dXY score in each window', action='store_true', default=False)
 
 ## SNP filtering options
-parser.add_argument('--missing', help='The missingness threshold for both groups; default=0.9', type=float, default=0.9)
-parser.add_argument('--maf', help='The minor allele frequency threshold for both groups; default=0.1', type=float, default=0.1)
+parser.add_argument('--missing', help='The missingness threshold for both groups', type=float, default=0.9)
+parser.add_argument('--maf', help='The minor allele frequency threshold for both groups', type=float, default=0.1)
 
 ## Permutation settings
 parser.add_argument('-P', '--permutation', help='Whether to perform permutation and output p-values', action='store_true', default=False)
-parser.add_argument('--max-permutation', help='The maximum permutation number to perform; default=100000', type=int, default=100000)
-parser.add_argument('--max-extreme', help='The maximum number of permutation score equal to or more extreme than the observed value before calculating p-value; default=10', type=int, default=10)
-parser.add_argument('--min-extreme', help='The number of extreme values when there is no extreme value after maximum number of permutations; default=0.5', type=float, default=0.5)
+parser.add_argument('--max-permutation', help='The maximum permutation number to perform', type=int, default=100000)
+parser.add_argument('--max-extreme', help='The maximum number of permutation score equal to or more extreme than the observed value before calculating p-value', type=int, default=10)
+parser.add_argument('--min-extreme', help='The number of extreme values when there is no extreme value after maximum number of permutations', type=float, default=0.5)
 
 args = parser.parse_args()
 
@@ -54,8 +52,6 @@ if args.group == 0:
         parser.error('--var-comp requires --group')
     if args.css:
         parser.error('--css requires --group')
-    if args.css_mod:
-        parser.error('--css-mod requires --group')
     if args.dxy:
         parser.error('--dxy requires --group')
     if args.permutation:
@@ -76,7 +72,7 @@ print('')
 
 
 #### Hidden parameters
-windowReportSize = 1000      # the denominator of reporting window scanned
+windowReportSize = 100      # the denominator of reporting window scanned
 
 
 #### Function for writing output files for statistics
@@ -97,8 +93,6 @@ if args.var_comp:
     resultHeader.append('Variance_comp')
 if args.css:
     resultHeader.append('CSS')
-if args.css_mod:
-    resultHeader.append('CSS_mod')
 if args.dxy:
     resultHeader.append('dXY')
 
@@ -111,8 +105,6 @@ if args.permutation:
         resultHeader.append('VRC_p')
     if args.css:
         resultHeader.append('CSS_p')
-    if args.css_mod:
-        resultHeader.append('CSSm_p')
     if args.dxy:
         resultHeader.append('dXY_p')
     
@@ -132,47 +124,44 @@ def skipLoop(results, resultHeader):
 
 
 ## Write the statistics for the records in the window
-def writeRecords(windowVcf, groupIDs, wSize, resultHeader, totalWindow):
+def writeRecords(records, groupIDs, wSize, resultHeader):
 # groupIDs was called when the first record encountered; it defines the indices of two groups in the VCF samples
     results = []
-    # Try to expand the iterator into lists of pos and genotypes
-    poss, gnts = ws.expandIterator(windowVcf)
 
     ## If output SNP positions
     if args.snp_position:
-        if len(poss) == 0:
-        # if there is no record
-            writeSP.write('NA\n')
-        else:
-            writeSP.write('\t'.join([str(x) for x in poss]) + '\n')
+        poss = ws.snpPositions(records)
+        writeSP.write('\t'.join([str(x) for x in poss]) + '\n')
     
     ## if output SNP number
     if args.snp_number:
-        num = ws.snpNumber(gnts)
+        num = ws.snpNumber(records)
         results.append(str(num))
-        if num == 0:
-        # if there is no record
+
+    if groupIDs != 0:
+        # if no records present in this window
+        if len(records) == 0:
             skipLoop(results, resultHeader)
             return 0
 
-    if groupIDs != 0:
-        ## Convert records to genotypeArray object
-        genoArray = ws.toGenotypeArray(gnts)
+        ## Convert records to genotypeArray object and
+        # subset the genoArray to contain only the two groups interested
+        subGenoArray, subGroupIDs = ws.subsetGenotypeArray(ws.toGenotypeArray(records), groupIDs)
 
         ## Check if only invariants remain, if not, remove the invariant sites
-        ifAllInvar, genoArray = ws.genoArrayInvar(genoArray, remove=True)
+        ifAllInvar, subGenoArray = ws.genoArrayInvar(subGenoArray, remove=True)
         if ifAllInvar:
             skipLoop(results, resultHeader)
             return 0
 
         ## Check if the variants are missed for a certain threshold in either group
-        isMiss, genoArray = ws.genoArrayMiss(genoArray, groupIDs, threshold=missThreshold)
+        isMiss, subGenoArray = ws.genoArrayMiss(subGenoArray, subGroupIDs, threshold=missThreshold)
         if isMiss:
             skipLoop(results, resultHeader)
             return 0
 
         ## Check if the MAF of the variants are lower than a specified threshold in either group
-        #lowMAF, genoArray = ws.genoArrayMAF(genoArray, groupIDs, threshold=mafThreshold)
+        #lowMAF, subGenoArray = ws.genoArrayMAF(subGenoArray, subGroupIDs, threshold=mafThreshold)
         #if lowMAF:
         #    skipLoop(results, resultHeader)
         #    return 0
@@ -183,7 +172,7 @@ def writeRecords(windowVcf, groupIDs, wSize, resultHeader, totalWindow):
 
         ## If output mean allele frequency difference
         if args.allele_freq_diff:
-            afd = ws.meanAlleleFreqDiffAllel(genoArray, groupIDs)
+            afd = ws.meanAlleleFreqDiffAllel(subGenoArray, subGroupIDs)
             results.append(str(afd))
             if args.permutation:
                 stats.append(ws.meanAlleleFreqDiffAllel)
@@ -191,7 +180,7 @@ def writeRecords(windowVcf, groupIDs, wSize, resultHeader, totalWindow):
 
         ## If output FST
         if args.fst:
-            fst = ws.wcFst(genoArray, groupIDs)
+            fst = ws.wcFst(subGenoArray, subGroupIDs)
             results.append(str(fst))
             if args.permutation:
                 stats.append(ws.wcFst)
@@ -199,7 +188,7 @@ def writeRecords(windowVcf, groupIDs, wSize, resultHeader, totalWindow):
 
         ## if output variance component
         if args.var_comp:
-            varcomp = ws.wcVarComp(genoArray, groupIDs)
+            varcomp = ws.wcVarComp(subGenoArray, subGroupIDs)
             results.append(str(varcomp))
             if args.permutation:
                 stats.append(ws.wcVarComp)
@@ -207,23 +196,15 @@ def writeRecords(windowVcf, groupIDs, wSize, resultHeader, totalWindow):
 
         ## If output CSS
         if args.css:
-            c = ws.css(genoArray, groupIDs)
-            results.append(str(c))
+            css = ws.css(subGenoArray, subGroupIDs)
+            results.append(str(css))
             if args.permutation:
                 stats.append(ws.css)
-                scores.append(c)
-
-        ## If output CSS-modified
-        if args.css_mod:
-            cm = ws.cssMod(genoArray, groupIDs)
-            results.append(str(cm))
-            if args.permutation:
-                stats.append(ws.cssMod)
-                scores.append(cm)
+                scores.append(css)
 
         ## If output dXY
         if args.dxy:
-            dxy = ws.dxy(genoArray, groupIDs, wSize)
+            dxy = ws.dxy(subGenoArray, subGroupIDs, wSize)
             results.append(str(dxy))
             if args.permutation:
                 stats.append(ws.dxy)
@@ -231,7 +212,7 @@ def writeRecords(windowVcf, groupIDs, wSize, resultHeader, totalWindow):
 
         ## If doing permuation test
         if args.permutation:
-            ps = ws.permuP(scores, stats, args.max_permutation, args.max_extreme, totalWindow, args.min_extreme, genoArray=genoArray, groupIDs=groupIDs, wSize=wSize)
+            ps = ws.permuP(scores, stats, args.max_permutation, args.max_extreme, args.min_extreme, genoArray=subGenoArray, groupIDs=subGroupIDs, wSize=wSize)
             results += [str(x) for x in ps]
 
         ## Write results
@@ -243,71 +224,94 @@ def writeRecords(windowVcf, groupIDs, wSize, resultHeader, totalWindow):
 ## Write the start and end position of the window
 writeWSE = open(outPrefix + '.winpos.tsv', 'w')
 def writeWindowStartEnd(start, wSize):
-# this function assumes the given start position is 1-based
     writeWSE.write(str(start) + '\t' + str(start + wSize - 1) + '\n')
     return 0
 
-## Set timer
-sTime = time.time()
 
 #### Main loop for sliding window
-## pysam reader
-vcf = VariantFile(vcfPath, 'r')
-#vcfReader = vcf.Reader(filename=vcfPath)
+# PyVCF reader
+vcfReader = vcf.Reader(filename=vcfPath)
 
-## Keep only the interested individuals defined in groups, if applicable
-if args.group != 0:
-    with open(args.group[0], 'r') as readG1:
-        group1Ind = readG1.read().splitlines()      # group1 sample names
-    with open(args.group[1], 'r') as readG2:
-        group2Ind = readG2.read().splitlines()      # group2 sample names
-    vcf.subset_samples(group1Ind + group2Ind)
-
-## Construct the looping lists for sliding windows
-print('Prepare window sliding ...')
-
-# Find the base position of the first SNP
-firstV = next(vcf)
-posStart = firstV.pos    # note that this value is 1-based
-# Find the current chromosome, assuming the vcf only contains one contig, for later fetching
-chrom = firstV.chrom
-# Find the indices for the two groups, if applicable
-if args.group != 0:
-    groupIDs = ws.getGroupID(list(firstV.samples), group1Ind, group2Ind)
-# Find the base position of the last SNP, this is going to take a while
-for r in vcf:
-    pass
-posEnd = r.pos              # note that this value is 1-based
-
-# Reset the iterator to the first base
-vcf.reset()
-
-# Compose the list for fetching the sliding windows, note that these values are converted to 0-based, half-opened coordinates
-# fetchCoord = [(s1, e1), (s2, e2), ... ]
-fetchCoord = []
-i = posStart - 1
-while i <= posEnd:
-    fetchCoord.append((i, i + wSize))
-    i += gap
-
-
-## Define storing values
+## Define storing lists
+starts = []    # define the start position of the current opened windows; 1-based
+openRecords = []    # store the openning SNP objects
 totalWindow = 0     # store the total number of window scanned
-
 ## Loop through SNPs in the VCF
-print('Time spent: ' + str(time.time() - sTime))
-print('Window sliding began.')
-for s, e in fetchCoord:
-    # fetch window vcf   
-    windowVcf = vcf.fetch(contig=chrom, start=s, end=e)
-    # parse the record in writeRecords function
-    writeRecords(windowVcf, groupIDs, wSize=wSize, resultHeader=resultHeader, totalWindow=totalWindow)
-    writeWindowStartEnd(s + 1, wSize)
+for record in vcfReader:
+    pos = record.POS
+    # add the first position into starts, also, load the indices of group ID if applicable
+    if starts == []:
+        starts.append(pos)
+        totalWindow += 1
 
-    # output the current number of window processed
-    totalWindow += 1
-    if totalWindow % windowReportSize == 0:
-        print(str(totalWindow) + ' windows scanned. Time spent: ' + str(time.time() - sTime))
+        # get the group indices if --group is defined, this is for statistics require group definition
+        if args.group != 0:
+            groupIDs = ws.getGroupID(record, args.group)
+        else:
+            groupIDs = 0
+
+    openRecords.append(record)
+
+    ## Determine whether new windows need to be opened
+    # if the current SNP position exceeds where the next window should be, open new window
+    if pos >= starts[-1] + gap:
+        # set new end to current right border before looping
+        newStart = starts[-1] + gap
+        # add new window starts until all windows start before the SNP are added
+        while newStart <= pos:
+            starts.append(newStart)
+            newStart += gap
+            totalWindow += 1
+            if totalWindow % windowReportSize == 0:
+                print('Total window scanned: ' + str(totalWindow))
+
+    ## Determine whether some old windows need to be closed and outputed
+    firstRight = starts[0] + wSize - 1    # the end of the leftest openning window
+    # if the current SNP position exceeds the first openning window, delete and output window
+    if pos > firstRight:
+        # set old end to the start of the leftest openning window
+        oldEnd = firstRight
+        # pull out all positions from all openned SNPs
+        poss = [r.POS for r in openRecords]
+        # set list for the indices of the SNPs to be deleted in openRecords
+        indiTBD = []
+
+        while oldEnd < pos:
+            
+            ## Extract the records in the window
+            start = oldEnd - wSize + 1
+            outRecords = [] # records in the window
+            for i, p in enumerate(poss):
+                if p >= start and p <= oldEnd:
+                    outRecords.append(openRecords[i])
+                    # if the current position only present in the leftest window
+                    if p < start + gap:
+                        indiTBD.append(i)
+
+            ## Output statistics from the records in the window
+            writeRecords(outRecords, groupIDs, wSize=wSize, resultHeader=resultHeader)
+            writeWindowStartEnd(start, wSize)
+
+            ## Remove the start of the leftest window from starts
+            starts.pop(0)
+
+            # new leftest window end before next loop
+            oldEnd += gap
+
+        ## Delete the SNPs that only present in the leftest openning window
+        if len(indiTBD) != 0:
+            del openRecords[indiTBD[0] : indiTBD[-1] + 1]
+
+
+#### Output the remaining sliding windows
+for start in starts:
+    end = start + wSize - 1
+    outRecords = []
+    for r in openRecords:
+        if r.POS >= start and r.POS <= end:
+            outRecords.append(r)
+    writeRecords(outRecords, groupIDs, wSize=wSize, resultHeader=resultHeader)
+    writeWindowStartEnd(start, wSize)
 
 
 #### Close openned files
@@ -315,7 +319,6 @@ writeWSE.close()
 writeResult.close()
 if args.snp_position:
     writeSP.close()
-
 
 #### Final output
 print('Finished; total window scanned: ' + str(totalWindow))
