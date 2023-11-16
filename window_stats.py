@@ -72,42 +72,39 @@ def genoArrayInvar(genoArray, remove=True):
     ac = genoArray.count_alleles()
     isNv = ac.is_non_segregating()
     if all(isNv):
-        return [True, 0]
+        return [True, 0, 0]
 
     if remove:
         removedArray = genoArray[[not x for x in isNv]]
 
-        return [False, removedArray]
+        return [False, removedArray, [not x for x in isNv]]
     else:
-        return[False, genoArray]
+        return[False, genoArray, [not x for x in isNv]]
 
 
 ## Filter the per-group missing rate of a genotypeArray and it's associated groupID
 def genoArrayMiss(genoArray, groupIDs, threshold=1.0):
 # default: remove variants that are all missings in either group
-    removeVar = []  # list for the variant ID to be removed
+    keptList = [True]*len(genoArray)   # list of true and false for which true is kept
     for groupID in groupIDs:
         groupGenoArray = genoArray.subset(sel1=groupID)
         for i, var in enumerate(groupGenoArray.is_missing()):
         # loop through an array of missing value boolean flags
             freqMiss = np.count_nonzero(var) / len(var)
             if freqMiss >= threshold:
-                if i not in removeVar:
-                    removeVar.append(i)
+                if keptList[i]:
+                    keptList[i] = False
 
-    if len(removeVar) == len(groupGenoArray):
+    if sum(keptList) == 0:
     # if all of the variants are missing in either group
-        return [True, 0]
+        return [True, 0, 0]
+    keptVar = genoArray[keptList]
 
-    keptVar = []
-    for i in range(len(groupGenoArray)):
-        if i not in removeVar:
-            keptVar.append(i)
-
-    return [False, genoArray.subset(sel0=keptVar)]
+    return [False, keptVar, keptList]
 
 
 ## Test if the minor allele frequencies in both groups are below a certain threshold
+## This function is abandoned.
 def genoArrayMAF(genoArray, groupIDs, threshold):
 # default: remove variants that are all missings in either group
     removeVar = []  # list for the variant ID to be removed
@@ -134,14 +131,18 @@ def genoArrayMAF(genoArray, groupIDs, threshold):
 
 ## Return the mean ALT allele frequency difference between two groups in the window, calculated by allel package.
 def meanAlleleFreqDiffAllel(genoArray, groupIDs, wSize=None):
-    meanAlleleFreqs = []
+    alleleFreqs = []
     for groupID in groupIDs:
         alleleCount = genoArray.count_alleles(subpop=groupID)
-        totalCount = np.sum(alleleCount)
-        altCount = np.sum(alleleCount[:, 1])
-        meanAlleleFreqs.append(altCount / totalCount)
+        refCount = alleleCount[:, 0]
+        altCount = alleleCount[:, 1]
+        alleleFreq = altCount / (refCount + altCount)
+        alleleFreqs.append(alleleFreq)
+    
+    alleleDiffs = abs(alleleFreqs[0] - alleleFreqs[1])
+    meanAlleleDiff = np.mean(alleleDiffs)
 
-    return abs(meanAlleleFreqs[0] - meanAlleleFreqs[1])
+    return meanAlleleDiff
 
 
 ## Calculate FST score between two groups
@@ -245,7 +246,7 @@ def cssMod(genoArray, groupIDs, wSize=None):
 ## Calculate dXY score between two groups
 ## dXY defines the pairwise nucleotide distance between the marine and freshwater group.
 def dxy(genoArray, groupIDs, wSize):
-    dxy = np.sum(al.mean_pairwise_difference_between(genoArray.count_alleles(subpop=groupIDs[0]), genoArray.count_alleles(subpop=groupIDs[1]))) / wSize
+    dxy = np.nansum(al.mean_pairwise_difference_between(genoArray.count_alleles(subpop=groupIDs[0]), genoArray.count_alleles(subpop=groupIDs[1]))) / wSize
     return dxy
 
 
