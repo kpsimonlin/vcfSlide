@@ -148,14 +148,10 @@ def meanAlleleFreqDiffAllel(genoArray, groupIDs, wSize=None):
 ## Calculate FST score between two groups
 def wcFst(genoArray, groupIDs, wSize=None):
     a, b, c = al.weir_cockerham_fst(genoArray, groupIDs)
-    fst = np.sum(a) / (np.sum(a) + np.sum(b) + np.sum(c))
-    return fst
-
-
-## Calculate variace component between two groups as a absolute divergence statistics
-def wcVarComp(genoArray, groupIDs, wSize=None):
-    a, b, c = al.weir_cockerham_fst(genoArray, groupIDs)
-    return np.sum(a)
+    bgVar = np.sum(a)
+    tVar = np.sum(a) + np.sum(b) + np.sum(c)
+    fst = bgVar / tVar
+    return [fst, bgVar, tVar]
 
 
 ## Calculate CSS score between two groups
@@ -251,7 +247,7 @@ def dxy(genoArray, groupIDs, wSize):
 
 
 ## Permutation test on selected statistics, report the p-values
-def permuP(scores, stats, maxPerm, maxExtm, totalWindow, minExtm=0.5, *args, **kwargs):
+def permuP(scores, stats, maxPerm, maxExtm, minExtm=0.5, *args, **kwargs):
 # Return the p-value of the given score using a permutation test
 # scores: a list of given divergence scores
 # stats: a list of functions calculating the divergence score
@@ -273,21 +269,15 @@ def permuP(scores, stats, maxPerm, maxExtm, totalWindow, minExtm=0.5, *args, **k
         if nPerm == maxPerm:
             break
 
-#        print(totalWindow)
-#        print(nPerm)
-#        print(extremeNum)
-#        print(returnP)
-#        print(time.time() - sTime)
-#        print()
         random.shuffle(decompGroupIDs)
-        g0IDs = decompGroupIDs[:g0Len]
-        g1IDs = decompGroupIDs[g0Len:]
-        #g0IDs = random.sample(decompGroupIDs, g0Len)
-        #g1IDs = list(set(decompGroupIDs) - set(g0IDs))
+#        g0IDs = decompGroupIDs[:g0Len]
+#        g1IDs = decompGroupIDs[g0Len:]
+        g0IDs = random.sample(decompGroupIDs, g0Len)
+        g1IDs = list(set(decompGroupIDs) - set(g0IDs))
         newGroupIDs = [g0IDs, g1IDs]
 
         # Test if at least one of the group is completely missing
-        isMiss, newGenoArray = genoArrayMiss(genoArray, newGroupIDs, threshold=1.0)
+        isMiss, newGenoArray, trueList = genoArrayMiss(genoArray, newGroupIDs, threshold=1.0)
         if isMiss:
             continue
         else:
@@ -295,9 +285,29 @@ def permuP(scores, stats, maxPerm, maxExtm, totalWindow, minExtm=0.5, *args, **k
             kwargs['groupIDs'] = newGroupIDs
 
         # Call the divergence score function
-        for s, stat in enumerate(stats):
+        permScores = []
+        for s, func in enumerate(stats):
+            if func == 'afd':
+                stat = meanAlleleFreqDiffAllel
+            elif func == 'fst':
+                stat = wcFst
+            elif func == 'varcomp':
+                stat = wcFst
+            elif func == 'css':
+                stat = css
+            elif func == 'cssmod':
+                stat = cssMod
+            elif func == 'dxy':
+                stat = dxy
+
             if extremeNum[s] < maxExtm:
                 permScore = stat(*args, **kwargs)
+                if func == 'fst':
+                    permScore = permScore[0]
+                elif func == 'varcomp':
+                    permScore = permScore[1]
+
+                permScores.append(permScore)
 
                 if permScore >= scores[s]:
                 # if the permutation score is as extreme as or more extreme than the observed score
@@ -311,6 +321,14 @@ def permuP(scores, stats, maxPerm, maxExtm, totalWindow, minExtm=0.5, *args, **k
                         # If all test reach maximum extreme values
                             return returnP
 
+#        print(nPerm)
+#        print(scores)
+#        print(permScores)
+#        print(extremeNum)
+#        print(returnP)
+#        print(time.time() - sTime)
+#        print()
+
         nPerm += 1
 
     # If the number of permutation loops exceeds the given threshold, report the given p-value for those statistics that have 0 extreme values, report p for the rest of the statistics with < maxExtm extreme values
@@ -323,3 +341,5 @@ def permuP(scores, stats, maxPerm, maxExtm, totalWindow, minExtm=0.5, *args, **k
             else:
                 returnP[i] = en / maxPerm
     return returnP
+
+

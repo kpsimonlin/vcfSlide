@@ -68,8 +68,6 @@ if args.group == 0:
 
 ## Check if --inherent has conficts
 if args.inherent:
-    if args.fst:
-        parser.error('--fst cannot be applied with --inherent')
     if args.css:
         parser.error('--css cannot be applied with --inherent, use --css-mod instead')
     if args.window_size % args.gap != 0:
@@ -134,9 +132,13 @@ writeResult.write('\t'.join(resultHeader) + '\n')
 
 ## Calculate statistics for records in each window
 def windowStats(windowVcf, groupIDs, wSize, resultHeader):
-# return a list of [snp_number, results]. snp_number default to [], remains [] if no record or not recording
+# return a list of [snp_number, results, hiddens]. snp_number default to [], remains [] if no record or not recording
     results = [0] + ['NA']*(len(resultHeader) - 1)
     # results = [0, 'NA', 'NA', ... ]. 0 for default SNP number, NAs for default statistics
+    hiddens = {}
+    # hiddens is a dictionary storing hidden statistics needed for the inherent method
+    inhGArray = 0
+    # the genoArray for inherent method, 0 if not using inherent method
 
     ## Try to expand the iterator into lists of pos and genotypes
     poss, gnts = ws.expandIterator(windowVcf)   
@@ -144,7 +146,7 @@ def windowStats(windowVcf, groupIDs, wSize, resultHeader):
 
     ## Return default results if there is no record
     if len(poss) == 0:
-        return [[], results]
+        return [[], results, hiddens, inhGArray]
 
     else:
         ## Report the position if specified, otherwise []
@@ -161,7 +163,7 @@ def windowStats(windowVcf, groupIDs, wSize, resultHeader):
             ## Check if only invariants remain, if not, remove the invariant sites
             ifAllInvar, genoArray, varList = ws.genoArrayInvar(genoArray, remove=True)
             if ifAllInvar:
-                return [[], results]
+                return [[], results, hiddens, inhGArray]
             else:
                 # update SNP number and SNP positions
                 if args.snp_position:
@@ -171,7 +173,7 @@ def windowStats(windowVcf, groupIDs, wSize, resultHeader):
             ## Check if the variants are missed for a certain threshold in either group
             isMiss, genoArray, varList = ws.genoArrayMiss(genoArray, groupIDs, threshold=missThreshold)
             if isMiss:
-                return [[], results]
+                return [[], results, hiddens, inhGArray]
             else:
                 # update SNP number and SNP positions
                 if args.snp_position:
@@ -185,7 +187,7 @@ def windowStats(windowVcf, groupIDs, wSize, resultHeader):
             #    return 0
 
             if args.permutation:
-                stats = []      # a list of the function for permutation test
+                stats = []      # a list of the function names (string) for permutation test
                 scores = []     # a list of the divergence scores for permutation test
 
             indicator = 1       # The indicator for each element in results, starting from 1 the first statistics (0 is snpNum)
@@ -196,26 +198,27 @@ def windowStats(windowVcf, groupIDs, wSize, resultHeader):
                 results[indicator] = afd
                 indicator += 1
                 if args.permutation:
-                    stats.append(ws.meanAlleleFreqDiffAllel)
+                    stats.append('afd')
                     scores.append(afd)
 
             ## If output FST
-            if args.fst:
-                fst = ws.wcFst(genoArray, groupIDs)
-                results[indicator] = fst
-                indicator += 1
-                if args.permutation:
-                    stats.append(ws.wcFst)
-                    scores.append(fst)
-
-            ## if output variance component
-            if args.var_comp:
-                varcomp = ws.wcVarComp(genoArray, groupIDs)
-                results[indicator] = varcomp
-                indicator += 1
-                if args.permutation:
-                    stats.append(ws.wcVarComp)
-                    scores.append(varcomp)
+            if args.fst or args.var_comp:
+                fst, varcomp, totalvar = ws.wcFst(genoArray, groupIDs)
+                if args.fst:
+                    results[indicator] = fst
+                    indicator += 1
+                    if args.permutation:
+                        stats.append('fst')
+                        scores.append(fst)
+                if args.var_comp:
+                    results[indicator] = varcomp
+                    indicator += 1
+                    if args.permutation:
+                        stats.append('varcomp')
+                        scores.append(varcomp)
+                if args.inherent:
+                    hiddens['varcomp'] = varcomp
+                    hiddens['totalvar'] = totalvar
 
             ## If output CSS
             if args.css:
@@ -223,7 +226,7 @@ def windowStats(windowVcf, groupIDs, wSize, resultHeader):
                 results[indicator] = c
                 indicator += 1
                 if args.permutation:
-                    stats.append(ws.css)
+                    stats.append('css')
                     scores.append(c)
 
             ## If output CSS-modified
@@ -232,7 +235,7 @@ def windowStats(windowVcf, groupIDs, wSize, resultHeader):
                 results[indicator] = cm
                 indicator += 1
                 if args.permutation:
-                    stats.append(ws.cssMod)
+                    stats.append('cssmod')
                     scores.append(cm)
 
             ## If output dXY
@@ -241,17 +244,21 @@ def windowStats(windowVcf, groupIDs, wSize, resultHeader):
                 results[indicator] = dxy
                 indicator += 1
                 if args.permutation:
-                    stats.append(ws.dxy)
+                    stats.append('dxy')
                     scores.append(dxy)
 
             ## If doing permuation test
             if args.permutation:
-                ps = ws.permuP(scores, stats, args.max_permutation, args.max_extreme, totalWindow, args.min_extreme, genoArray=genoArray, groupIDs=groupIDs, wSize=wSize)
-                for p in ps:
-                    results[indicator] = p
-                    indicator += 1
+                if args.inherent:
+                    inhGArray = genoArray
+                    # the permutation is allocated to another function in window_merge.py after all results are available
+                else:
+                    ps = ws.permuP(scores, stats, args.max_permutation, args.max_extreme, args.min_extreme, genoArray=genoArray, groupIDs=groupIDs, wSize=wSize)
+                    for p in ps:
+                        results[indicator] = p
+                        indicator += 1
 
-            return [snpPoss, results]
+            return [snpPoss, results, hiddens, inhGArray]
 
 
 ## Write the results into output files
@@ -355,6 +362,12 @@ if args.inherent:
         # the ending point of current window will serve as the starting point of the new sub-window in the next window
 
         mResults = wm.mergeResults(openResults, resultHeader)
+
+        # Permutation
+        if args.permutation:
+            permuPs = wm.permuPMerge(openResults, resultHeader, mResults, args.max_permutation, args.max_extreme, minExtm=args.min_extreme, groupIDs=groupIDs, wSize=wSize)
+            mResults += permuPs
+
         writeResults(mResults)
         writeWindowStartEnd(S + 1, wSize)
 
